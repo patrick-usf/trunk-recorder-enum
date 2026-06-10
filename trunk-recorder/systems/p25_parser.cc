@@ -342,6 +342,20 @@ std::vector<TrunkMessage> P25Parser::decode_mbt_data(unsigned long opcode, boost
     messages.push_back(message);
     return messages;
   }
+  // Auto-fill raw_frame for partially-decoded MBT frames that are still UNKNOWN
+  // (e.g. opcode 0x02 with non-Motorola mfrid, opcode 0x3c, opcode 0x3b when
+  // channel IDs don't resolve to frequencies).
+  if (message.message_type == UNKNOWN && message.raw_frame.empty()) {
+    std::ostringstream raw;
+    raw << "op=0x" << std::hex << std::setfill('0') << std::setw(2) << opcode
+        << " mfid=0x" << std::setw(2) << message.mfid;
+    message.raw_frame = raw.str();
+    if (message.meta.empty()) {
+      std::ostringstream ms;
+      ms << "stub_mbt op=0x" << std::hex << opcode;
+      message.meta = ms.str();
+    }
+  }
   messages.push_back(message);
   return messages;
 }
@@ -1050,6 +1064,26 @@ std::vector<TrunkMessage> P25Parser::decode_tsbk(boost::dynamic_bitset<> &tsbk, 
     messages.push_back(message);
     return messages;
   }
+  // Auto-fill raw_frame for any frame that reached this point with message_type
+  // still UNKNOWN — covers stub opcode branches that only have a debug log line.
+  if (message.message_type == UNKNOWN && message.raw_frame.empty()) {
+    std::ostringstream raw;
+    raw << "op=0x" << std::hex << std::setfill('0') << std::setw(2) << opcode
+        << " mfid=0x" << std::setw(2) << message.mfid << " bytes=";
+    boost::dynamic_bitset<> tmp = tsbk >> 16;
+    for (int i = 11; i >= 0; i--) {
+      uint8_t b = 0;
+      for (int j = 7; j >= 0; j--)
+        b = (b << 1) | (unsigned int)tmp[i * 8 + j];
+      raw << std::hex << std::setfill('0') << std::setw(2) << (unsigned int)b;
+    }
+    message.raw_frame = raw.str();
+    if (message.meta.empty()) {
+      std::ostringstream ms;
+      ms << "stub_tsbk op=0x" << std::hex << opcode;
+      message.meta = ms.str();
+    }
+  }
   messages.push_back(message);
   return messages;
 }
@@ -1213,9 +1247,21 @@ std::vector<TrunkMessage> P25Parser::parse_message(gr::message::sptr msg, System
     messages = decode_mbt_data(opcode, header, mbt_data, link_id, nac, sys_num);
     P25FrameLogger::instance().log_messages(messages, system, 12);
     return messages;
-  } else if (type == 15) {
+  } else if (type == 15) { // TDULC — Terminator Data Unit with Link Control (DUID 0x0F)
     BOOST_LOG_TRIVIAL(debug) << "P25 Parser: TDULC on control channel. Retuning to next control channel.";
     message.message_type = TDULC;
+    message.direction = DIR_OSP;
+    if (!s.empty()) {
+      std::ostringstream raw;
+      raw << "tdulc bytes=";
+      for (size_t i = 0; i < s.length() && i < 12; i++)
+        raw << std::hex << std::setfill('0') << std::setw(2) << (unsigned int)(uint8_t)s[i];
+      message.raw_frame = raw.str();
+      message.meta = message.raw_frame;
+    }
+    messages.push_back(message);
+    P25FrameLogger::instance().log_messages(messages, system, 15);
+    return messages;
   } else if (type == 18) { // Phase 2 TDMA manufacturer-specific MAC PDU
     if (s.length() >= 3) {
       message.opcode    = (uint8_t)s[0] & 0x3f;

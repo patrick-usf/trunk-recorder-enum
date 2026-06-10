@@ -111,7 +111,7 @@ void P25FrameLogger::check_roll() {
 
 void P25FrameLogger::write_header() {
   const char *hdr =
-      "timestamp\tsys_name\tnac\tdirection\tframe_type\tmfid\topcode_hex\t"
+      "timestamp\tsys_name\tnac\tduid\tdirection\tframe_type\tmfid\topcode_hex\t"
       "opcode_name\tdecode_status\ttalkgroup\tsource_id\tfreq_mhz\t"
       "emergency\tencrypted\tphase2_tdma\ttdma_slot\twacn\tsys_id\t"
       "rfss_id\tsite_id\traw_frame\tmeta\n";
@@ -259,9 +259,21 @@ std::string P25FrameLogger::format_record(const TrunkMessage &msg,
   switch (frame_type) {
     case 7:  frame_type_str = "TSBK";    break;
     case 12: frame_type_str = "MBT";     break;
+    case 15: frame_type_str = "TDULC";   break;
     case 18: frame_type_str = "MAC_PDU"; break;
     case 20: frame_type_str = "RAW_PDU"; break;
     default: frame_type_str = std::to_string(frame_type); break;
+  }
+
+  // DUID (4-bit Data Unit Identifier from NID) — message queue type == DUID decimal
+  // for standard FDMA frame types; Phase 2 and synthetic types use 0xFF sentinel.
+  std::string duid_str;
+  switch (frame_type) {
+    case 7:  duid_str = "0x07"; break;  // TSBK
+    case 12: duid_str = "0x0c"; break;  // PDU/MBC (MBT format)
+    case 15: duid_str = "0x0f"; break;  // TDULC
+    case 20: duid_str = "0x0c"; break;  // PDU/MBC (non-MBT format, same DUID)
+    default: duid_str = "0xff"; break;  // Phase 2 or synthesized — no standard FDMA DUID
   }
 
   std::string dir_str;
@@ -292,6 +304,7 @@ std::string P25FrameLogger::format_record(const TrunkMessage &msg,
   rec << ts_now()                   << '\t'
       << sys_name                   << '\t'
       << nac_hex.str()              << '\t'
+      << duid_str                   << '\t'
       << dir_str                    << '\t'
       << frame_type_str             << '\t'
       << mfid_hex.str()             << '\t'
