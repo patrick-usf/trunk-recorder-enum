@@ -1,6 +1,8 @@
 #include "p25_frame_logger.h"
 #include "system.h"
+#include <boost/log/trivial.hpp>
 #include <chrono>
+#include <cstdio>
 #include <ctime>
 #include <iomanip>
 #include <sstream>
@@ -14,16 +16,16 @@ P25FrameLogger::~P25FrameLogger() {
   close();
 }
 
-void P25FrameLogger::open(const std::string &path) {
+// ---------------------------------------------------------------------------
+// Public interface
+// ---------------------------------------------------------------------------
+
+void P25FrameLogger::open(const std::string &path, std::uintmax_t max_bytes) {
   std::lock_guard<std::mutex> lock(mtx_);
-  log_file_.open(path, std::ios::app);
-  if (log_file_.is_open()) {
-    // Only write header if file is new/empty
-    log_file_.seekp(0, std::ios::end);
-    if (log_file_.tellp() == 0) {
-      write_header();
-    }
-  }
+  base_path_ = path;
+  max_bytes_ = max_bytes;
+  bytes_written_ = 0;
+  open_file();
 }
 
 void P25FrameLogger::close() {
@@ -37,19 +39,95 @@ bool P25FrameLogger::is_open() const {
   return log_file_.is_open();
 }
 
-void P25FrameLogger::write_header() {
-  log_file_ << "timestamp\tsys_name\tnac\tdirection\tframe_type\tmfid\topcode_hex\t"
-               "opcode_name\tdecode_status\ttalkgroup\tsource_id\tfreq_mhz\t"
-               "emergency\tencrypted\tphase2_tdma\ttdma_slot\twacn\tsys_id\t"
-               "rfss_id\tsite_id\traw_frame\tmeta\n";
+void P25FrameLogger::log_messages(const std::vector<TrunkMessage> &messages,
+                                  System *system, int frame_type) {
+  if (messages.empty())
+    return;
+  std::lock_guard<std::mutex> lock(mtx_);
+  if (!log_file_.is_open())
+    return;
+  for (const auto &msg : messages) {
+    if (msg.message_type == INVALID_CC_MESSAGE)
+      continue;
+    std::string rec = format_record(msg, system, frame_type) + '\n';
+    log_file_ << rec;
+    bytes_written_ += rec.size();
+  }
   log_file_.flush();
+  check_roll();
 }
+
+// ---------------------------------------------------------------------------
+// Private helpers
+// ---------------------------------------------------------------------------
+
+void P25FrameLogger::open_file() {
+  // Append to existing file so restarts don't clobber history
+  log_file_.open(base_path_, std::ios::app);
+  if (!log_file_.is_open()) {
+    BOOST_LOG_TRIVIAL(error) << "P25FrameLogger: cannot open " << base_path_;
+    return;
+  }
+  // Determine current file size to track bytes_written_ correctly
+  log_file_.seekp(0, std::ios::end);
+  std::streamoff current_size = log_file_.tellp();
+  bytes_written_ = (current_size > 0) ? static_cast<std::uintmax_t>(current_size) : 0;
+
+  if (bytes_written_ == 0)
+    write_header();
+}
+
+void P25FrameLogger::roll() {
+  if (!log_file_.is_open())
+    return;
+
+  log_file_.close();
+
+  // Build rolled filename: strip extension, append timestamp, re-add extension
+  std::string rolled = base_path_;
+  auto dot = rolled.rfind('.');
+  std::string suffix = ts_file_suffix();
+  if (dot != std::string::npos) {
+    rolled = rolled.substr(0, dot) + "_" + suffix + rolled.substr(dot);
+  } else {
+    rolled = rolled + "_" + suffix;
+  }
+
+  if (std::rename(base_path_.c_str(), rolled.c_str()) != 0) {
+    BOOST_LOG_TRIVIAL(error) << "P25FrameLogger: roll rename failed: "
+                             << base_path_ << " -> " << rolled;
+  } else {
+    BOOST_LOG_TRIVIAL(info) << "P25FrameLogger: rolled to " << rolled;
+  }
+
+  bytes_written_ = 0;
+  open_file();
+}
+
+void P25FrameLogger::check_roll() {
+  if (bytes_written_ >= max_bytes_)
+    roll();
+}
+
+void P25FrameLogger::write_header() {
+  const char *hdr =
+      "timestamp\tsys_name\tnac\tdirection\tframe_type\tmfid\topcode_hex\t"
+      "opcode_name\tdecode_status\ttalkgroup\tsource_id\tfreq_mhz\t"
+      "emergency\tencrypted\tphase2_tdma\ttdma_slot\twacn\tsys_id\t"
+      "rfss_id\tsite_id\traw_frame\tmeta\n";
+  log_file_ << hdr;
+  bytes_written_ += std::string(hdr).size();
+}
+
+// ---------------------------------------------------------------------------
+// Timestamp helpers
+// ---------------------------------------------------------------------------
 
 std::string P25FrameLogger::ts_now() const {
   using namespace std::chrono;
-  auto now   = system_clock::now();
-  auto ms    = duration_cast<milliseconds>(now.time_since_epoch()) % 1000;
-  auto t     = system_clock::to_time_t(now);
+  auto now = system_clock::now();
+  auto ms  = duration_cast<milliseconds>(now.time_since_epoch()) % 1000;
+  auto t   = system_clock::to_time_t(now);
   std::tm tm_utc{};
   gmtime_r(&t, &tm_utc);
   char buf[32];
@@ -59,6 +137,21 @@ std::string P25FrameLogger::ts_now() const {
   return oss.str();
 }
 
+std::string P25FrameLogger::ts_file_suffix() const {
+  using namespace std::chrono;
+  auto now = system_clock::now();
+  auto t   = system_clock::to_time_t(now);
+  std::tm tm_utc{};
+  gmtime_r(&t, &tm_utc);
+  char buf[24];
+  strftime(buf, sizeof(buf), "%Y%m%d_%H%M%SZ", &tm_utc);
+  return std::string(buf);
+}
+
+// ---------------------------------------------------------------------------
+// Decode helpers
+// ---------------------------------------------------------------------------
+
 std::string P25FrameLogger::decode_status(const TrunkMessage &msg) const {
   if (msg.message_type == UNKNOWN)
     return "RAW";
@@ -67,7 +160,8 @@ std::string P25FrameLogger::decode_status(const TrunkMessage &msg) const {
   return "FULL";
 }
 
-std::string P25FrameLogger::opcode_name(unsigned long opcode, unsigned long mfid, int frame_type) const {
+std::string P25FrameLogger::opcode_name(unsigned long opcode, unsigned long mfid,
+                                        int frame_type) const {
   if (frame_type == 12) { // MBT
     if (mfid == 0x90) {
       switch (opcode) {
@@ -83,7 +177,6 @@ std::string P25FrameLogger::opcode_name(unsigned long opcode, unsigned long mfid
     }
   }
 
-  // TSBK / Phase2 abbreviated (frame_type 7 or 20 raw PDU)
   if (mfid == 0x90) {
     switch (opcode) {
       case 0x00: return "TSBK_MOT_GRG_ADD_CMD";
@@ -93,6 +186,8 @@ std::string P25FrameLogger::opcode_name(unsigned long opcode, unsigned long mfid
       case 0x05: return "TSBK_MOT_OSP_TRAFFIC_CH_ID";
       case 0x06: return "TSBK_MOT_GRG_CN_GRANT_UPDT";
       case 0x09: return "TSBK_MOT_OSP_SYSTEM_LOADING";
+      case 0x0b: return "TSBK_MOT_UNKNOWN_0B";
+      case 0x16: return "TSBK_MOT_UNKNOWN_16";
       default:   return "TSBK_MOT_UNKNOWN";
     }
   }
@@ -103,7 +198,6 @@ std::string P25FrameLogger::opcode_name(unsigned long opcode, unsigned long mfid
     }
   }
 
-  // Standard APCO opcodes
   switch (opcode) {
     case 0x00: return "TSBK_GRP_V_CH_GRANT";
     case 0x01: return "TSBK_RESERVED_01";
@@ -116,7 +210,7 @@ std::string P25FrameLogger::opcode_name(unsigned long opcode, unsigned long mfid
     case 0x09: return "TSBK_TELEPHONE_INT_V_CH_GRANT_UPDT";
     case 0x0a: return "TSBK_TELEPHONE_INT_ANS_REQ";
     case 0x14: return "TSBK_SNDCP_CH_GRANT";
-    case 0x15: return "TSBK_SNDCP_CH_REQ";          // ISP
+    case 0x15: return "TSBK_SNDCP_CH_REQ";
     case 0x16: return "TSBK_SNDCP_CH_ANNOUNCE_EXP";
     case 0x18: return "TSBK_STATUS_UPDATE";
     case 0x1a: return "TSBK_STATUS_QUERY";
@@ -134,7 +228,7 @@ std::string P25FrameLogger::opcode_name(unsigned long opcode, unsigned long mfid
     case 0x2c: return "TSBK_U_REG_RSP";
     case 0x2d: return "TSBK_AUTH_CMD";
     case 0x2e: return "TSBK_U_DE_REG_ACK";
-    case 0x2f: return "TSBK_GRP_V_CH_GRANT_UPDT_MBT"; // Also UU DeReg Ack
+    case 0x2f: return "TSBK_U_DE_REG_ACK_ALT";
     case 0x30: return "TSBK_TDMA_SYNC_BCAST";
     case 0x31: return "TSBK_AUTH_DEMAND";
     case 0x32: return "TSBK_AUTH_RSP";
@@ -155,7 +249,12 @@ std::string P25FrameLogger::opcode_name(unsigned long opcode, unsigned long mfid
   }
 }
 
-std::string P25FrameLogger::format_record(const TrunkMessage &msg, System *system, int frame_type) const {
+// ---------------------------------------------------------------------------
+// Record formatting
+// ---------------------------------------------------------------------------
+
+std::string P25FrameLogger::format_record(const TrunkMessage &msg,
+                                          System *system, int frame_type) const {
   std::string frame_type_str;
   switch (frame_type) {
     case 7:  frame_type_str = "TSBK";    break;
@@ -167,9 +266,9 @@ std::string P25FrameLogger::format_record(const TrunkMessage &msg, System *syste
 
   std::string dir_str;
   switch (msg.direction) {
-    case DIR_OSP:     dir_str = "OSP"; break;
-    case DIR_ISP:     dir_str = "ISP"; break;
-    default:          dir_str = "UNK"; break;
+    case DIR_OSP: dir_str = "OSP"; break;
+    case DIR_ISP: dir_str = "ISP"; break;
+    default:      dir_str = "UNK"; break;
   }
 
   std::ostringstream opcode_hex;
@@ -190,42 +289,27 @@ std::string P25FrameLogger::format_record(const TrunkMessage &msg, System *syste
   std::string sys_name = system ? system->get_short_name() : "unknown";
 
   std::ostringstream rec;
-  rec << ts_now()              << '\t'
-      << sys_name              << '\t'
-      << nac_hex.str()         << '\t'
-      << dir_str               << '\t'
-      << frame_type_str        << '\t'
-      << mfid_hex.str()        << '\t'
-      << opcode_hex.str()      << '\t'
+  rec << ts_now()                   << '\t'
+      << sys_name                   << '\t'
+      << nac_hex.str()              << '\t'
+      << dir_str                    << '\t'
+      << frame_type_str             << '\t'
+      << mfid_hex.str()             << '\t'
+      << opcode_hex.str()           << '\t'
       << opcode_name(msg.opcode, msg.mfid, frame_type) << '\t'
-      << decode_status(msg)    << '\t'
-      << msg.talkgroup         << '\t'
-      << msg.source            << '\t'
-      << freq_str.str()        << '\t'
-      << (msg.emergency ? 1 : 0) << '\t'
-      << (msg.encrypted ? 1 : 0) << '\t'
+      << decode_status(msg)         << '\t'
+      << msg.talkgroup              << '\t'
+      << msg.source                 << '\t'
+      << freq_str.str()             << '\t'
+      << (msg.emergency   ? 1 : 0) << '\t'
+      << (msg.encrypted   ? 1 : 0) << '\t'
       << (msg.phase2_tdma ? 1 : 0) << '\t'
-      << msg.tdma_slot         << '\t'
-      << msg.wacn              << '\t'
-      << msg.sys_id            << '\t'
-      << msg.sys_rfss          << '\t'
-      << msg.sys_site_id       << '\t'
-      << msg.raw_frame         << '\t'
+      << msg.tdma_slot              << '\t'
+      << msg.wacn                   << '\t'
+      << msg.sys_id                 << '\t'
+      << msg.sys_rfss               << '\t'
+      << msg.sys_site_id            << '\t'
+      << msg.raw_frame              << '\t'
       << msg.meta;
   return rec.str();
-}
-
-void P25FrameLogger::log_messages(const std::vector<TrunkMessage> &messages, System *system, int frame_type) {
-  if (messages.empty())
-    return;
-  std::lock_guard<std::mutex> lock(mtx_);
-  if (!log_file_.is_open())
-    return;
-  for (const auto &msg : messages) {
-    // Skip timeout and internal control messages
-    if (msg.message_type == INVALID_CC_MESSAGE)
-      continue;
-    log_file_ << format_record(msg, system, frame_type) << '\n';
-  }
-  log_file_.flush();
 }
