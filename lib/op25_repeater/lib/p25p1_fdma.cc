@@ -467,12 +467,13 @@ namespace gr {
                 j += 4;
             }
 
-            std::string pdu(11,0);
+            std::string pdu(12,0);
             pdu[0] = (framer->nac >> 8) & 0xff; pdu[1] = framer->nac & 0xff;
             for (int i = 0; i < 9; i++) {
                 pdu[2+i] = lcw[i];
             }
-            //send_msg(pdu, M_P25_FDMA_LCW); // This messages is not being parsed, not sure what it is for
+            pdu[11] = (uint8_t)framer->duid; // source DUID: 0x05=LDU1, 0x0f=TDULC
+            send_msg(pdu, M_P25_FDMA_LCW);
 
             int pb =   (lcw[0] >> 7);
             int sf =  ((lcw[0] & 0x40) >> 6);

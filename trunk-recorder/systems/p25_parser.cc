@@ -1199,6 +1199,7 @@ std::vector<TrunkMessage> P25Parser::parse_message(gr::message::sptr msg, System
     b <<= 16; // for missing crc
 
     messages = decode_tsbk(b, nac, sys_num);
+    for (auto &m : messages) m.duid = 0x07;
     P25FrameLogger::instance().log_messages(messages, system, 7);
     return messages;
   } else if (type == 12) { // # trunk: MBT
@@ -1245,12 +1246,14 @@ std::vector<TrunkMessage> P25Parser::parse_message(gr::message::sptr msg, System
     BOOST_LOG_TRIVIAL(debug) <<  "MBT Header: " <<  header;
     BOOST_LOG_TRIVIAL(debug) <<  "MBT  Data   " <<  mbt_data; */
     messages = decode_mbt_data(opcode, header, mbt_data, link_id, nac, sys_num);
+    for (auto &m : messages) m.duid = 0x0c;
     P25FrameLogger::instance().log_messages(messages, system, 12);
     return messages;
   } else if (type == 15) { // TDULC — Terminator Data Unit with Link Control (DUID 0x0F)
     BOOST_LOG_TRIVIAL(debug) << "P25 Parser: TDULC on control channel. Retuning to next control channel.";
     message.message_type = TDULC;
     message.direction = DIR_OSP;
+    message.duid = 0x0f;
     if (!s.empty()) {
       std::ostringstream raw;
       raw << "tdulc bytes=";
@@ -1262,11 +1265,51 @@ std::vector<TrunkMessage> P25Parser::parse_message(gr::message::sptr msg, System
     messages.push_back(message);
     P25FrameLogger::instance().log_messages(messages, system, 15);
     return messages;
+  } else if (type == 19) { // LCW — Link Control Word from LDU1 or TDULC (M_P25_FDMA_LCW)
+    // Payload (after NAC strip): lcw[0..8] (9 bytes) + source_duid (1 byte)
+    // source_duid: 0x05=LDU1, 0x0f=TDULC
+    if (s.length() >= 9) {
+      uint8_t source_duid = (s.length() >= 10) ? (uint8_t)s[9] : 0x05;
+      uint8_t lco = (uint8_t)s[0] & 0x3f;  // Link Control Opcode
+      uint8_t pb  = ((uint8_t)s[0] >> 7) & 1; // protected bit
+      message.duid      = source_duid;
+      message.direction = DIR_OSP;
+      message.opcode    = lco;
+      message.mfid      = (uint8_t)s[1];
+      message.encrypted = (pb == 1);
+
+      if (pb == 0) { // only decode fields for unencrypted LCWs
+        if (lco == 0x00) { // Group Voice Channel User
+          message.talkgroup = ((uint8_t)s[4] << 8) | (uint8_t)s[5];
+          message.source    = ((uint8_t)s[6] << 16) | ((uint8_t)s[7] << 8) | (uint8_t)s[8];
+          message.message_type = GRANT;
+        } else if (lco == 0x03) { // Unit to Unit Voice Channel User
+          message.source    = ((uint8_t)s[3] << 16) | ((uint8_t)s[4] << 8) | (uint8_t)s[5];
+          message.talkgroup = ((uint8_t)s[6] << 16) | ((uint8_t)s[7] << 8) | (uint8_t)s[8];
+          message.message_type = UU_V_GRANT;
+        }
+      }
+
+      std::ostringstream raw;
+      raw << "lcw duid=0x" << std::hex << std::setfill('0') << std::setw(2) << (unsigned int)source_duid
+          << " lco=0x" << std::setw(2) << (unsigned int)lco
+          << " pb=" << (unsigned int)pb
+          << " bytes=";
+      for (size_t i = 0; i < 9; i++)
+        raw << std::setw(2) << (unsigned int)(uint8_t)s[i];
+      message.raw_frame = raw.str();
+      if (message.message_type == UNKNOWN)
+        message.meta = message.raw_frame;
+    }
+    messages.push_back(message);
+    P25FrameLogger::instance().log_messages(messages, system, 19);
+    return messages;
   } else if (type == 18) { // Phase 2 TDMA manufacturer-specific MAC PDU
     if (s.length() >= 3) {
       message.opcode    = (uint8_t)s[0] & 0x3f;
       message.mfid      = (uint8_t)s[1];
       message.direction = DIR_OSP;
+      message.duid      = 0xff; // Phase 2 — no standard FDMA DUID
       std::ostringstream raw;
       raw << "mac_pdu mfid=0x" << std::hex << std::setfill('0') << std::setw(2) << message.mfid
           << " op=0x" << std::setw(2) << message.opcode << " bytes=";
@@ -1284,6 +1327,7 @@ std::vector<TrunkMessage> P25Parser::parse_message(gr::message::sptr msg, System
       message.mfid      = 0;
       message.opcode    = (uint8_t)s[0] & 0x1f; // fmt field
       message.direction = DIR_OSP;
+      message.duid      = 0x0c; // PDU/MBC
       std::ostringstream raw;
       raw << "raw_pdu sap=0x" << std::hex << std::setfill('0') << std::setw(2) << ((uint8_t)s[1] & 0x3f)
           << " fmt=0x" << std::setw(2) << message.opcode << " bytes=";

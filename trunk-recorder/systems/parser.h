@@ -1,5 +1,6 @@
 #ifndef PARSE_H
 #define PARSE_H
+#include <cstdint>
 #include <iostream>
 #include <vector>
 #include <string>
@@ -63,6 +64,7 @@ struct TrunkMessage {
   unsigned long mfid;        // Manufacturer ID byte (0x00=standard, 0x90=Motorola, 0xA4=M/A-COM)
   FrameDirection direction;  // DIR_OSP=downlink, DIR_ISP=uplink
   std::string raw_frame;     // hex-encoded raw bytes for unknown/undecoded frames
+  uint8_t duid;              // P25 DUID from NID (0x07=TSBK, 0x0c=PDU, 0x0f=TDULC, 0x05=LDU1, etc.)
 };
 
 class TrunkParser {

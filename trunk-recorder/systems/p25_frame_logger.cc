@@ -162,6 +162,42 @@ std::string P25FrameLogger::decode_status(const TrunkMessage &msg) const {
 
 std::string P25FrameLogger::opcode_name(unsigned long opcode, unsigned long mfid,
                                         int frame_type) const {
+  if (frame_type == 19) { // LCW — Link Control Word (LCCO opcode)
+    switch (opcode) {
+      case 0x00: return "LCW_GRP_V_CH_USER";         // Group Voice Channel User
+      case 0x01: return "LCW_RESERVED_01";
+      case 0x02: return "LCW_GRP_V_CH_UPDATE";        // Group Voice Channel Update
+      case 0x03: return "LCW_UU_V_CH_USER";           // Unit to Unit Voice Channel User
+      case 0x04: return "LCW_GRP_V_CH_UPDATE_EXP";   // Group Voice Channel Update Explicit
+      case 0x05: return "LCW_UU_ANS_REQ";             // Unit to Unit Answer Request
+      case 0x08: return "LCW_TEL_INT_V_CH_USER";      // Telephone Interconnect Voice Channel User
+      case 0x09: return "LCW_TEL_INT_ANS_REQ";        // Telephone Interconnect Answer Request
+      case 0x0f: return "LCW_ENC_PROD_CTRL";          // Encryption Product Control
+      case 0x10: return "LCW_ENC_CTRL";               // Encryption Control (Algorithm ID + Key ID)
+      case 0x15: return "LCW_CALL_TERM";              // Call Termination / Cancellation
+      case 0x16: return "LCW_SNDCP_CH_ANNOUNCE_EXP"; // SNDCP Data Channel Announcement
+      case 0x1c: return "LCW_RFSS_STS_BCAST";        // RFSS Status Broadcast
+      case 0x1d: return "LCW_NET_STS_BCAST";         // Network Status Broadcast
+      case 0x1e: return "LCW_RESERVED_1E";
+      case 0x1f: return "LCW_CALL_ALERT";             // Call Alert
+      case 0x20: return "LCW_ACK_RSP";               // Acknowledge Response
+      case 0x21: return "LCW_EXT_FUNC_CMD";           // Extended Function Command
+      case 0x22: return "LCW_EXT_FUNC_CMD_ACK";      // Extended Function Command Acknowledge
+      case 0x27: return "LCW_DENY_RSP";              // Deny Response
+      case 0x28: return "LCW_GRP_AFF_RSP";           // Group Affiliation Response
+      case 0x2b: return "LCW_LOC_REG_RSP";           // Location Registration Response
+      case 0x2c: return "LCW_U_REG_RSP";             // Unit Registration Response
+      case 0x2f: return "LCW_U_DE_REG_ACK";          // Unit Deregistration Acknowledge
+      case 0x30: return "LCW_TDMA_SYNC_BCAST";       // TDMA Synchronization Broadcast
+      case 0x34: return "LCW_IDEN_UP_TDMA";          // Identifier Update for TDMA
+      case 0x35: return "LCW_TIME_DATE_ANNOUNCE";    // Time and Date Announcement
+      case 0x39: return "LCW_SEC_RFSS_BCAST";        // Secondary RFSS Status Broadcast
+      case 0x3a: return "LCW_ADJ_STS_BCAST";         // Adjacent Site Status Broadcast
+      case 0x3b: return "LCW_NET_STS_BCAST_EXP";     // Network Status Broadcast Explicit
+      case 0x3d: return "LCW_IDEN_UP";               // Identifier Update
+      default:   return "LCW_UNKNOWN";
+    }
+  }
   if (frame_type == 12) { // MBT
     if (mfid == 0x90) {
       switch (opcode) {
@@ -261,20 +297,14 @@ std::string P25FrameLogger::format_record(const TrunkMessage &msg,
     case 12: frame_type_str = "MBT";     break;
     case 15: frame_type_str = "TDULC";   break;
     case 18: frame_type_str = "MAC_PDU"; break;
+    case 19: frame_type_str = "LCW";     break;
     case 20: frame_type_str = "RAW_PDU"; break;
     default: frame_type_str = std::to_string(frame_type); break;
   }
 
-  // DUID (4-bit Data Unit Identifier from NID) — message queue type == DUID decimal
-  // for standard FDMA frame types; Phase 2 and synthetic types use 0xFF sentinel.
-  std::string duid_str;
-  switch (frame_type) {
-    case 7:  duid_str = "0x07"; break;  // TSBK
-    case 12: duid_str = "0x0c"; break;  // PDU/MBC (MBT format)
-    case 15: duid_str = "0x0f"; break;  // TDULC
-    case 20: duid_str = "0x0c"; break;  // PDU/MBC (non-MBT format, same DUID)
-    default: duid_str = "0xff"; break;  // Phase 2 or synthesized — no standard FDMA DUID
-  }
+  std::ostringstream duid_oss;
+  duid_oss << "0x" << std::hex << std::setfill('0') << std::setw(2) << (unsigned int)msg.duid;
+  std::string duid_str = duid_oss.str();
 
   std::string dir_str;
   switch (msg.direction) {
