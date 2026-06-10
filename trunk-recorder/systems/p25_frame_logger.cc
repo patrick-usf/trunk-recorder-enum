@@ -187,6 +187,7 @@ std::string P25FrameLogger::opcode_name(unsigned long opcode, unsigned long mfid
       case 0x20: return "LCW_ACK_RSP";               // Acknowledge Response
       case 0x21: return "LCW_EXT_FUNC_CMD";           // Extended Function Command
       case 0x22: return "LCW_EXT_FUNC_CMD_ACK";      // Extended Function Command Acknowledge
+      case 0x23: return "LCW_RFSS_STS_BCAST_IMP";  // RFSS Status Broadcast (SF=1 abbreviated, implicit MFID)
       case 0x27: return "LCW_DENY_RSP";              // Deny Response
       case 0x28: return "LCW_GRP_AFF_RSP";           // Group Affiliation Response
       case 0x2b: return "LCW_LOC_REG_RSP";           // Location Registration Response

@@ -1331,27 +1331,55 @@ std::vector<TrunkMessage> P25Parser::parse_message(gr::message::sptr msg, System
       uint8_t source_duid = (s.length() >= 10) ? (uint8_t)s[9] : 0x05;
       uint8_t lco = (uint8_t)s[0] & 0x3f;  // Link Control Opcode
       uint8_t pb  = ((uint8_t)s[0] >> 7) & 1; // protected bit
+      uint8_t sf  = ((uint8_t)s[0] >> 6) & 1; // secondary format: 0=explicit MFID, 1=abbreviated (no MFID)
       message.duid      = source_duid;
       message.direction = DIR_OSP;
       message.opcode    = lco;
-      message.mfid      = (uint8_t)s[1];
+      message.mfid      = (sf == 0) ? (uint8_t)s[1] : 0; // s[1] is LMC, not MFID, when SF=1
       message.encrypted = (pb == 1);
 
       if (pb == 0) { // only decode fields for unencrypted LCWs
-        if (lco == 0x00) { // Group Voice Channel User
-          message.talkgroup = ((uint8_t)s[4] << 8) | (uint8_t)s[5];
-          message.source    = ((uint8_t)s[6] << 16) | ((uint8_t)s[7] << 8) | (uint8_t)s[8];
-          message.message_type = GRANT;
-        } else if (lco == 0x03) { // Unit to Unit Voice Channel User
-          message.source    = ((uint8_t)s[3] << 16) | ((uint8_t)s[4] << 8) | (uint8_t)s[5];
-          message.talkgroup = ((uint8_t)s[6] << 16) | ((uint8_t)s[7] << 8) | (uint8_t)s[8];
-          message.message_type = UU_V_GRANT;
+        if (sf == 0) { // explicit MFID format
+          if (lco == 0x00) { // Group Voice Channel User
+            message.talkgroup = ((uint8_t)s[4] << 8) | (uint8_t)s[5];
+            message.source    = ((uint8_t)s[6] << 16) | ((uint8_t)s[7] << 8) | (uint8_t)s[8];
+            message.message_type = GRANT;
+          } else if (lco == 0x03) { // Unit to Unit Voice Channel User
+            message.source    = ((uint8_t)s[3] << 16) | ((uint8_t)s[4] << 8) | (uint8_t)s[5];
+            message.talkgroup = ((uint8_t)s[6] << 16) | ((uint8_t)s[7] << 8) | (uint8_t)s[8];
+            message.message_type = UU_V_GRANT;
+          }
+        } else { // SF=1: abbreviated format, no MFID, s[1..8] are all payload
+          if (lco == 0x23) { // RFSS Status Broadcast (abbreviated)
+            // s[1]      = LMC (Link Modification Control)
+            // s[2][7:4] = RFSS_ID[3:0], s[2][3:0]+s[3] = SYS_ID[11:0]
+            // s[4]      = SSN / RFSS status
+            // s[5]      = SITE_ID[7:0]
+            // s[6][7:4] = CC_CHAN_ID, s[6][3:0]+s[7] = CC_CHAN_NUM[11:0]
+            // s[8]      = SYSSERVICES
+            message.sys_rfss    = ((uint8_t)s[2] >> 4) & 0x0f;
+            message.sys_id      = (((uint8_t)s[2] & 0x0f) << 8) | (uint8_t)s[3];
+            message.sys_site_id = (uint8_t)s[5];
+            uint8_t  cc_iden     = ((uint8_t)s[6] >> 4) & 0x0f;
+            uint16_t cc_chan     = (((uint8_t)s[6] & 0x0f) << 8) | (uint8_t)s[7];
+            uint8_t  sysservices = (uint8_t)s[8];
+            message.message_type = SYSID;
+            std::ostringstream m;
+            m << "rfss_sts rfss_id=" << message.sys_rfss
+              << " sys_id=0x" << std::hex << std::setfill('0') << std::setw(3) << message.sys_id
+              << " site_id=" << std::dec << message.sys_site_id
+              << " cc_iden=" << (unsigned int)cc_iden
+              << " cc_chan=" << cc_chan
+              << " sysservices=0x" << std::hex << std::setw(2) << (unsigned int)sysservices;
+            message.meta = m.str();
+          }
         }
       }
 
       std::ostringstream raw;
       raw << "lcw duid=0x" << std::hex << std::setfill('0') << std::setw(2) << (unsigned int)source_duid
           << " lco=0x" << std::setw(2) << (unsigned int)lco
+          << " sf=" << (unsigned int)sf
           << " pb=" << (unsigned int)pb
           << " bytes=";
       for (size_t i = 0; i < 9; i++)
