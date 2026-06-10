@@ -12,6 +12,7 @@
 #include <gnuradio/basic_block.h>
 #include <gnuradio/top_block.h>
 #include <gnuradio/uhd/usrp_source.h>
+#include <gnuradio/zeromq/pub_sink.h>
 #include <iostream>
 #include <numeric>
 #include <osmosdr/source.h>
@@ -66,8 +67,10 @@ class Source {
   std::string driver;
   std::string device;
   std::string antenna;
+  std::string zmq_address_;
   gr::basic_block_sptr source_block;
   gr::blocks::selector::sptr recorder_selector;
+  gr::zeromq::pub_sink::sptr zmq_pub_;
   signal_detector_cvf::sptr signal_detector;
 
   void add_gain_stage(std::string stage_name, int value);
@@ -95,6 +98,7 @@ public:
   std::string get_device();
   void set_antenna(std::string ant);
   std::string get_antenna();
+  void set_zmq_address(std::string addr);
   void set_error(double e);
   double get_error();
   void set_freq_corr(double p);

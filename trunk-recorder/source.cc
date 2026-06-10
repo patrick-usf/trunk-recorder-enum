@@ -219,11 +219,23 @@ bool Source::is_selector_port_enabled(unsigned int port) {
   return recorder_selector->is_port_enabled(port);
 }
 
+void Source::set_zmq_address(std::string addr) {
+  zmq_address_ = addr;
+}
+
 void Source::attach_selector(gr::top_block_sptr tb) {
   if (!attached_selector) {
     attached_selector = true;
     recorder_selector = gr::blocks::selector::make(sizeof(gr_complex), 0, 0);
     tb->connect(source_block, 0, recorder_selector, 0);
+    if (!zmq_address_.empty()) {
+      zmq_pub_ = gr::zeromq::pub_sink::make(
+          sizeof(gr_complex), 1,
+          const_cast<char *>(zmq_address_.c_str()),
+          100, false, -1, "", true, true);
+      tb->connect(source_block, 0, zmq_pub_, 0);
+      BOOST_LOG_TRIVIAL(info) << "ZMQ IQ publisher active at " << zmq_address_;
+    }
   }
 }
 

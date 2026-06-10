@@ -75,7 +75,7 @@ find_package(Gnuradio REQUIRED)
 include(GrVersion)
 
 set(GR_REQUIRED_COMPONENTS RUNTIME ANALOG BLOCKS DIGITAL FILTER FFT PMT)
-find_package(Gnuradio REQUIRED COMPONENTS runtime analog blocks digital filter fft)
+find_package(Gnuradio REQUIRED COMPONENTS runtime analog blocks digital filter fft zeromq)
 if(Gnuradio_VERSION VERSION_LESS "3.8")
     find_package(Volk)
 endif()
@@ -384,8 +384,38 @@ if(NOT Gnuradio_VERSION VERSION_LESS "3.8")
     gnuradio::gnuradio-digital
     gnuradio::gnuradio-filter
     gnuradio::gnuradio-pmt
-    )  
+    gnuradio::gnuradio-zeromq
+    )
 endif()
+
+add_executable(p25-data-monitor trunk-recorder/p25_data_monitor.cc)
+
+target_link_libraries(p25-data-monitor
+    trunk_recorder_library
+    gnuradio-op25_repeater
+    gnuradio::gnuradio-zeromq
+    gnuradio::gnuradio-analog
+    gnuradio::gnuradio-blocks
+    gnuradio::gnuradio-digital
+    gnuradio::gnuradio-filter
+    gnuradio::gnuradio-pmt
+    ${CMAKE_DL_LIBS}
+    ssl crypto
+    ${CURL_LIBRARIES}
+    ${Boost_LIBRARIES}
+    ${GNURADIO_PMT_LIBRARIES}
+    ${GNURADIO_RUNTIME_LIBRARIES}
+    ${GNURADIO_FILTER_LIBRARIES}
+    ${GNURADIO_DIGITAL_LIBRARIES}
+    ${GNURADIO_ANALOG_LIBRARIES}
+    ${GNURADIO_AUDIO_LIBRARIES}
+    ${GNURADIO_UHD_LIBRARIES}
+    ${UHD_LIBRARIES}
+    ${GNURADIO_BLOCKS_LIBRARIES}
+    ${GNURADIO_OSMOSDR_LIBRARIES}
+)
+
+install(TARGETS p25-data-monitor RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
 
 
 install(TARGETS trunk-recorder RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})

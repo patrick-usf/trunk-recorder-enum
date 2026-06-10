@@ -45,7 +45,7 @@ public:
   void load_freq_table(std::string custom_freq_table_file, int sys_num);
   double channel_id_to_frequency(int chan_id, int sys_num);
   std::string channel_to_string(int chan, int sys_num);
-  std::vector<TrunkMessage> parse_message(gr::message::sptr msg, System *system);
+  std::vector<TrunkMessage> parse_message(gr::message::sptr msg, System *system, double fallback_freq = 0.0);
 };
 
 #endif

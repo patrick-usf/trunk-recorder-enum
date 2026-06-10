@@ -1127,7 +1127,20 @@ void printbincharpad(char c) {
   // std::cout << " | ";
 }
 
-std::vector<TrunkMessage> P25Parser::parse_message(gr::message::sptr msg, System *system) {
+// Apply fallback_freq to messages whose freq field is 0, then log.
+// Used by the data-channel monitor so every frame carries the tuned channel frequency.
+static void log_with_freq(std::vector<TrunkMessage> &msgs, System *sys,
+                          int frame_type, double fallback_freq) {
+  if (fallback_freq != 0.0) {
+    for (auto &m : msgs) {
+      if (m.freq == 0.0)
+        m.freq = fallback_freq;
+    }
+  }
+  P25FrameLogger::instance().log_messages(msgs, sys, frame_type);
+}
+
+std::vector<TrunkMessage> P25Parser::parse_message(gr::message::sptr msg, System *system, double fallback_freq) {
   std::vector<TrunkMessage> messages;
 
   long type = msg->type();
@@ -1225,7 +1238,7 @@ std::vector<TrunkMessage> P25Parser::parse_message(gr::message::sptr msg, System
 
     messages = decode_tsbk(b, nac, sys_num);
     for (auto &m : messages) m.duid = 0x07;
-    P25FrameLogger::instance().log_messages(messages, system, 7);
+    log_with_freq(messages, system, 7, fallback_freq);
     return messages;
   } else if (type == 12) { // # trunk: MBT
     std::string s1 = s.substr(0, 10);
@@ -1272,7 +1285,7 @@ std::vector<TrunkMessage> P25Parser::parse_message(gr::message::sptr msg, System
     BOOST_LOG_TRIVIAL(debug) <<  "MBT  Data   " <<  mbt_data; */
     messages = decode_mbt_data(opcode, header, mbt_data, link_id, nac, sys_num);
     for (auto &m : messages) m.duid = 0x0c;
-    P25FrameLogger::instance().log_messages(messages, system, 12);
+    log_with_freq(messages, system, 12, fallback_freq);
     return messages;
   } else if (type == 15) { // TDULC — Terminator Data Unit with Link Control (DUID 0x0F)
     BOOST_LOG_TRIVIAL(debug) << "P25 Parser: TDULC on control channel. Retuning to next control channel.";
@@ -1289,7 +1302,7 @@ std::vector<TrunkMessage> P25Parser::parse_message(gr::message::sptr msg, System
       message.meta = message.raw_frame;
     }
     messages.push_back(message);
-    P25FrameLogger::instance().log_messages(messages, system, 15);
+    log_with_freq(messages, system, 15, fallback_freq);
     return messages;
   } else if (type == 19) { // LCW or ESS (both use M_P25_FDMA_LCW)
     // ESS (Encryption Sync Sequence) from LDU2: length==12 after NAC strip
@@ -1348,7 +1361,7 @@ std::vector<TrunkMessage> P25Parser::parse_message(gr::message::sptr msg, System
         message.meta = message.raw_frame;
     }
     messages.push_back(message);
-    P25FrameLogger::instance().log_messages(messages, system, 19);
+    log_with_freq(messages, system, 19, fallback_freq);
     return messages;
   } else if (type == 18) { // Phase 2 TDMA manufacturer-specific MAC PDU
     message.nac = nac;
@@ -1367,7 +1380,7 @@ std::vector<TrunkMessage> P25Parser::parse_message(gr::message::sptr msg, System
     }
     message.message_type = UNKNOWN;
     messages.push_back(message);
-    P25FrameLogger::instance().log_messages(messages, system, 18);
+    log_with_freq(messages, system, 18, fallback_freq);
     return messages;
   } else if (type == 20) { // non-MBT PDU header forwarded for logging
     message.nac = nac;
@@ -1386,7 +1399,7 @@ std::vector<TrunkMessage> P25Parser::parse_message(gr::message::sptr msg, System
     }
     message.message_type = UNKNOWN;
     messages.push_back(message);
-    P25FrameLogger::instance().log_messages(messages, system, 20);
+    log_with_freq(messages, system, 20, fallback_freq);
     return messages;
   } else if (type == 22) { // HDU — Header Data Unit, call start (DUID 0x00)
     // payload: MI(9) + MFID(1) + algid(1) + keyid(2) + tgid(2) = 15 bytes after NAC strip
@@ -1415,7 +1428,7 @@ std::vector<TrunkMessage> P25Parser::parse_message(gr::message::sptr msg, System
     }
     message.message_type = UNKNOWN;
     messages.push_back(message);
-    P25FrameLogger::instance().log_messages(messages, system, 22);
+    log_with_freq(messages, system, 22, fallback_freq);
     return messages;
   }
   messages.push_back(message);

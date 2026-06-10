@@ -606,6 +606,12 @@ bool load_config(string config_file, Config &config, gr::top_block_sptr &tb, std
           source->set_antenna(antenna);
           source->set_silence_frames(silence_frames);
 
+          std::string zmq_address = element.value("zmqAddress", "");
+          if (!zmq_address.empty()) {
+            source->set_zmq_address(zmq_address);
+            BOOST_LOG_TRIVIAL(info) << "ZMQ address: " << zmq_address;
+          }
+
           if (ppm != 0) {
             source->set_freq_corr(ppm);
           }
