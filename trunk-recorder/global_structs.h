@@ -45,6 +45,7 @@ struct Config {
   bool soft_vocoder;
   bool record_uu_v_calls;
   int frequency_format;
+  std::string control_frame_log; // path for P25 control frame TSV log; empty = disabled
 };
 
 struct Call_Source {

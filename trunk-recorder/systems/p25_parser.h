@@ -1,6 +1,7 @@
 #ifndef P25_PARSE_H
 #define P25_PARSE_H
 #include "parser.h"
+#include "p25_frame_logger.h"
 #include <bitset>
 #include <boost/dynamic_bitset.hpp>
 #include <boost/log/trivial.hpp>

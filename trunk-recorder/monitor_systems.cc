@@ -800,6 +800,11 @@ int monitor_messages(Config &config, gr::top_block_sptr &tb, std::vector<Source 
   smartnet_parser = new SmartnetParser(); // this has to eventually be generic;
   p25_parser = new P25Parser();
 
+  if (!config.control_frame_log.empty()) {
+    P25FrameLogger::instance().open(config.control_frame_log);
+    BOOST_LOG_TRIVIAL(info) << "P25 frame logger active: " << config.control_frame_log;
+  }
+
   while (1) {
 
     if (exit_flag) { // my action when signal set it 1

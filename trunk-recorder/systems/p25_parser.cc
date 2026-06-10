@@ -169,6 +169,8 @@ std::vector<TrunkMessage> P25Parser::decode_mbt_data(unsigned long opcode, boost
   message.wacn = 0;
   message.nac = nac;
   message.sys_id = 0;
+  message.sys_rfss = 0;
+  message.sys_site_id = 0;
   message.sys_num = sys_num;
   message.talkgroup = 0;
   message.emergency = false;
@@ -180,10 +182,12 @@ std::vector<TrunkMessage> P25Parser::decode_mbt_data(unsigned long opcode, boost
   message.tdma_slot = 0;
   message.freq = 0;
   message.opcode = opcode;
+  message.mfid = bitset_shift_mask(header, 72, 0xff);
+  message.direction = DIR_OSP;
   message.patch_data.sg = 0;
   message.patch_data.ga1 = 0;
   message.patch_data.ga2 = 0;
-  message.patch_data.ga3 = 0; 
+  message.patch_data.ga3 = 0;
 
   BOOST_LOG_TRIVIAL(debug) << "decode_mbt_data: $" << opcode;
   if (opcode == 0x0) { // grp voice channel grant
@@ -328,7 +332,14 @@ std::vector<TrunkMessage> P25Parser::decode_mbt_data(unsigned long opcode, boost
 
     BOOST_LOG_TRIVIAL(debug) << "mbt04\tUnit to Unit Chan Grant\tChannel ID: " << channel_to_string(ch, sys_num) << "\tFreq: " << format_freq(f) << "\tTarget ID: " << std::setw(7) << ta << "\tTDMA " << get_tdma_slot(ch, sys_num) << "\tSource ID: " << sa;
   } else {
-    BOOST_LOG_TRIVIAL(debug) << "mbt other: " << opcode;
+    BOOST_LOG_TRIVIAL(debug) << "mbt_unknown: op=0x" << std::hex << opcode
+                             << " mfid=0x" << message.mfid;
+    std::ostringstream raw;
+    raw << "op=0x" << std::hex << std::setfill('0') << std::setw(2) << opcode
+        << " mfid=0x" << std::setw(2) << message.mfid;
+    message.raw_frame = raw.str();
+    message.meta = "unknown_mbt op=0x" + [&]{ std::ostringstream s; s << std::hex << opcode; return s.str(); }();
+    messages.push_back(message);
     return messages;
   }
   messages.push_back(message);
@@ -349,6 +360,8 @@ std::vector<TrunkMessage> P25Parser::decode_tsbk(boost::dynamic_bitset<> &tsbk, 
   message.wacn = 0;
   message.nac = nac;
   message.sys_id = 0;
+  message.sys_rfss = 0;
+  message.sys_site_id = 0;
   message.sys_num = sys_num;
   message.talkgroup = 0;
   message.emergency = false;
@@ -360,10 +373,12 @@ std::vector<TrunkMessage> P25Parser::decode_tsbk(boost::dynamic_bitset<> &tsbk, 
   message.tdma_slot = 0;
   message.freq = 0;
   message.opcode = opcode;
+  message.mfid = bitset_shift_mask(tsbk, 80, 0xff);
+  message.direction = DIR_OSP;
   message.patch_data.sg = 0;
   message.patch_data.ga1 = 0;
   message.patch_data.ga2 = 0;
-  message.patch_data.ga3 = 0; 
+  message.patch_data.ga3 = 0;
 
   BOOST_LOG_TRIVIAL(trace) << "TSBK: opcode: $" << std::hex << opcode;
   if (opcode == 0x00) { // group voice chan grant
@@ -1015,7 +1030,24 @@ std::vector<TrunkMessage> P25Parser::decode_tsbk(boost::dynamic_bitset<> &tsbk, 
     add_freq_table(iden, temp_table, sys_num);
     BOOST_LOG_TRIVIAL(debug) << "tsbk3d iden id " << std::dec << iden << " toff " << toff * 0.25 << " spac " << spac * 0.125 << " freq " << freq * 0.000005;
   } else {
-    BOOST_LOG_TRIVIAL(debug) << "tsbk other " << std::hex << opcode;
+    BOOST_LOG_TRIVIAL(debug) << "tsbk_unknown: op=0x" << std::hex << opcode
+                             << " mfid=0x" << message.mfid;
+    // Capture the raw bytes rather than silently dropping the frame
+    std::ostringstream raw;
+    raw << "op=0x" << std::hex << std::setfill('0') << std::setw(2) << opcode
+        << " mfid=0x" << std::setw(2) << message.mfid;
+    // encode first 12 bytes of tsbk as hex
+    boost::dynamic_bitset<> tmp = tsbk >> 16; // undo the pre-shift
+    raw << " bytes=";
+    for (int _i = 11; _i >= 0; _i--) {
+      uint8_t _b = 0;
+      for (int _j = 7; _j >= 0; _j--)
+        _b = (_b << 1) | (unsigned int)tmp[_i * 8 + _j];
+      raw << std::hex << std::setfill('0') << std::setw(2) << (unsigned int)_b;
+    }
+    message.raw_frame = raw.str();
+    message.meta = "unknown_tsbk op=0x" + [&]{ std::ostringstream s; s << std::hex << opcode; return s.str(); }();
+    messages.push_back(message);
     return messages;
   }
   messages.push_back(message);
@@ -1132,7 +1164,9 @@ std::vector<TrunkMessage> P25Parser::parse_message(gr::message::sptr msg, System
     }
     b <<= 16; // for missing crc
 
-    return decode_tsbk(b, nac, sys_num);
+    messages = decode_tsbk(b, nac, sys_num);
+    P25FrameLogger::instance().log_messages(messages, system, 7);
+    return messages;
   } else if (type == 12) { // # trunk: MBT
     std::string s1 = s.substr(0, 10);
     std::string s2 = s.substr(10);
@@ -1176,14 +1210,46 @@ std::vector<TrunkMessage> P25Parser::parse_message(gr::message::sptr msg, System
     /* BOOST_LOG_TRIVIAL(debug) << "MBT  type :$" << std::hex << type << " len $" << std::hex << s1.length() << "/" << s2.length();
     BOOST_LOG_TRIVIAL(debug) <<  "MBT Header: " <<  header;
     BOOST_LOG_TRIVIAL(debug) <<  "MBT  Data   " <<  mbt_data; */
-    return decode_mbt_data(opcode, header, mbt_data, link_id, nac, sys_num);
-    // self.trunked_systems[nac].decode_mbt_data(opcode, header << 16, mbt_data
-    // << 32)
-  } else if (type == 15)
-  {
-    //TDU with Link Contol. Link Control words should not be seen on an active Control Channel.
+    messages = decode_mbt_data(opcode, header, mbt_data, link_id, nac, sys_num);
+    P25FrameLogger::instance().log_messages(messages, system, 12);
+    return messages;
+  } else if (type == 15) {
     BOOST_LOG_TRIVIAL(debug) << "P25 Parser: TDULC on control channel. Retuning to next control channel.";
     message.message_type = TDULC;
+  } else if (type == 18) { // Phase 2 TDMA manufacturer-specific MAC PDU
+    if (s.length() >= 3) {
+      message.opcode    = (uint8_t)s[0] & 0x3f;
+      message.mfid      = (uint8_t)s[1];
+      message.direction = DIR_OSP;
+      std::ostringstream raw;
+      raw << "mac_pdu mfid=0x" << std::hex << std::setfill('0') << std::setw(2) << message.mfid
+          << " op=0x" << std::setw(2) << message.opcode << " bytes=";
+      for (size_t i = 0; i < s.length(); i++)
+        raw << std::setw(2) << (unsigned int)(uint8_t)s[i];
+      message.raw_frame = raw.str();
+      message.meta      = message.raw_frame;
+    }
+    message.message_type = UNKNOWN;
+    messages.push_back(message);
+    P25FrameLogger::instance().log_messages(messages, system, 18);
+    return messages;
+  } else if (type == 20) { // non-MBT PDU header forwarded for logging
+    if (s.length() >= 3) {
+      message.mfid      = 0;
+      message.opcode    = (uint8_t)s[0] & 0x1f; // fmt field
+      message.direction = DIR_OSP;
+      std::ostringstream raw;
+      raw << "raw_pdu sap=0x" << std::hex << std::setfill('0') << std::setw(2) << ((uint8_t)s[1] & 0x3f)
+          << " fmt=0x" << std::setw(2) << message.opcode << " bytes=";
+      for (size_t i = 0; i < s.length(); i++)
+        raw << std::setw(2) << (unsigned int)(uint8_t)s[i];
+      message.raw_frame = raw.str();
+      message.meta      = message.raw_frame;
+    }
+    message.message_type = UNKNOWN;
+    messages.push_back(message);
+    P25FrameLogger::instance().log_messages(messages, system, 20);
+    return messages;
   }
   messages.push_back(message);
   return messages;

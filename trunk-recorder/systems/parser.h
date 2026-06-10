@@ -2,6 +2,13 @@
 #define PARSE_H
 #include <iostream>
 #include <vector>
+#include <string>
+
+enum FrameDirection {
+  DIR_OSP     = 0, // Outbound Subscriber PDU — tower → radio (downlink/control channel)
+  DIR_ISP     = 1, // Inbound Subscriber PDU  — radio → tower (uplink)
+  DIR_UNKNOWN = 2
+};
 
 enum MessageType {
   GRANT = 0,
@@ -53,7 +60,9 @@ struct TrunkMessage {
   unsigned long wacn;
   PatchData patch_data;
   unsigned long opcode;
-  
+  unsigned long mfid;        // Manufacturer ID byte (0x00=standard, 0x90=Motorola, 0xA4=M/A-COM)
+  FrameDirection direction;  // DIR_OSP=downlink, DIR_ISP=uplink
+  std::string raw_frame;     // hex-encoded raw bytes for unknown/undecoded frames
 };
 
 class TrunkParser {

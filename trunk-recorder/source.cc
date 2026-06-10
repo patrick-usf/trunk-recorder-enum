@@ -131,7 +131,7 @@ Source::Source(double c, double r, double e, std::string drv, std::string dev, C
 
   if (driver == "usrp") {
     gr::uhd::usrp_source::sptr usrp_src;
-    usrp_src = gr::uhd::usrp_source::make(device, uhd::stream_args_t("fc32"));
+    usrp_src = gr::uhd::usrp_source::make(device, uhd::stream_args_t("fc32", "sc16"));
 
     BOOST_LOG_TRIVIAL(info) << "SOURCE TYPE USRP (UHD)";
 

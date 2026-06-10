@@ -421,7 +421,7 @@ void p25p2_tdma::convert_abbrev_msg(const uint8_t byte_buf[], const uint16_t nac
 	std::string tsbk(12,0);
 	tsbk[0] = nac >> 8; tsbk[1] = nac & 0xff;
 	tsbk[2] = 0x80 + (byte_buf[0] & 0x3f); // opcode with LB bit set
-	tsbk[3] = 0x00;                        // mfrid
+	tsbk[3] = mfid;                        // mfrid — preserve network value
 	for (int i = 4; i <= 11; i++) {
 		tsbk[i] = byte_buf[i-3];
 	}

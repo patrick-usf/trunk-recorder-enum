@@ -623,8 +623,11 @@ namespace gr {
                         fprintf (stderr, "%s NAC 0x%03x PDU:  fmt=%02x, op=0x%02x : %s %s %s %s\n",
                                 logts.get(d_msgq_id), framer->nac, fmt, op, s0, s1, s2, s3);
                     }
-                } else if (d_debug >= 10) {
-                    fprintf(stderr, "%s NAC 0x%03x PDU:  non-MBT message ignored\n", logts.get(d_msgq_id), framer->nac);
+                } else {
+                    if (d_debug >= 10)
+                        fprintf(stderr, "%s NAC 0x%03x PDU:  non-MBT SAP=%02x fmt=%02x forwarded for logging\n",
+                                logts.get(d_msgq_id), framer->nac, sap, fmt);
+                    process_duid(M_P25_RAW_PDU, framer->nac, deinterleave_buf[0].data(), 12);
                 }
 
             }

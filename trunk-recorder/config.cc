@@ -186,6 +186,10 @@ bool load_config(string config_file, Config &config, gr::top_block_sptr &tb, std
     BOOST_LOG_TRIVIAL(info) << "Instance Id: " << config.instance_id;
     config.broadcast_signals = data.value("broadcastSignals", false);
     BOOST_LOG_TRIVIAL(info) << "Broadcast Signals: " << config.broadcast_signals;
+    config.control_frame_log = data.value("controlFrameLog", "");
+    if (!config.control_frame_log.empty()) {
+      BOOST_LOG_TRIVIAL(info) << "Control Frame Log: " << config.control_frame_log;
+    }
     config.default_mode = data.value("defaultMode", "digital");
     BOOST_LOG_TRIVIAL(info) << "Default Mode: " << config.default_mode;
     config.call_timeout = data.value("callTimeout", 3.0);

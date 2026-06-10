@@ -47,6 +47,7 @@ static const int16_t M_P25_MAC_PTT      = 16;
 static const int16_t M_P25_MAC_END_PTT  = 17;
 static const int16_t M_P25_MAC_PDU      = 18;
 static const int16_t M_P25_FDMA_LCW     = 19;
+static const int16_t M_P25_RAW_PDU      = 20; // non-MBT PDU header block forwarded for frame logging
 
 // DMR Messages
 static const int16_t M_DMR_TIMEOUT      = -1;
