@@ -1265,10 +1265,29 @@ std::vector<TrunkMessage> P25Parser::parse_message(gr::message::sptr msg, System
     messages.push_back(message);
     P25FrameLogger::instance().log_messages(messages, system, 15);
     return messages;
-  } else if (type == 19) { // LCW — Link Control Word from LDU1 or TDULC (M_P25_FDMA_LCW)
-    // Payload (after NAC strip): lcw[0..8] (9 bytes) + source_duid (1 byte)
-    // source_duid: 0x05=LDU1, 0x0f=TDULC
-    if (s.length() >= 9) {
+  } else if (type == 19) { // LCW or ESS (both use M_P25_FDMA_LCW)
+    // ESS (Encryption Sync Sequence) from LDU2: length==12 after NAC strip
+    //   mi[0..8](9) + algid(1) + keyid_hi(1) + keyid_lo(1)
+    // LCW (Link Control Word) from LDU1 or TDULC: length==10 after NAC strip
+    //   lcw[0..8](9) + source_duid(1)
+    if (s.length() >= 12) { // ESS from LDU2 (DUID 0x09)
+      uint8_t  algid = (uint8_t)s[9];
+      uint16_t keyid = ((uint8_t)s[10] << 8) | (uint8_t)s[11];
+      message.duid      = 0x09;
+      message.direction = DIR_OSP;
+      message.opcode    = algid;   // algid as opcode — all standard algids > 0x3f,
+                                   // outside valid LCCO range, so distinguishable in logger
+      message.encrypted = (algid != 0x80);
+
+      std::ostringstream raw;
+      raw << "ess algid=0x" << std::hex << std::setfill('0') << std::setw(2) << (unsigned int)algid
+          << " keyid=0x"    << std::setw(4) << keyid
+          << " mi=";
+      for (int i = 0; i < 9; i++)
+        raw << std::setw(2) << (unsigned int)(uint8_t)s[i];
+      message.raw_frame = raw.str();
+      message.meta      = message.raw_frame;
+    } else if (s.length() >= 9) { // LCW from LDU1 or TDULC
       uint8_t source_duid = (s.length() >= 10) ? (uint8_t)s[9] : 0x05;
       uint8_t lco = (uint8_t)s[0] & 0x3f;  // Link Control Opcode
       uint8_t pb  = ((uint8_t)s[0] >> 7) & 1; // protected bit

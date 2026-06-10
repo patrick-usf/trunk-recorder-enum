@@ -399,6 +399,19 @@ namespace gr {
                 ess_algid = next_algid;
                 ess_keyid = next_keyid;
                 memcpy(ess_mi, next_mi, sizeof(next_mi));
+
+                // Forward ESS via the LCW message type (type 19).
+                // Payload: NAC(2) + MI(9) + algid(1) + keyid(2) = 14 bytes total.
+                // After the parser strips NAC, s.length()==12 identifies this as ESS
+                // vs LCW (s.length()==10), no extra discriminator byte needed.
+                std::string ess_pdu(14, '\0');
+                ess_pdu[0] = (framer->nac >> 8) & 0xff;
+                ess_pdu[1] =  framer->nac       & 0xff;
+                for (int k = 0; k < 9; k++) ess_pdu[2 + k] = next_mi[k];
+                ess_pdu[11] = next_algid;
+                ess_pdu[12] = (next_keyid >> 8) & 0xff;
+                ess_pdu[13] =  next_keyid       & 0xff;
+                send_msg(ess_pdu, M_P25_FDMA_LCW);
             }
         }
 

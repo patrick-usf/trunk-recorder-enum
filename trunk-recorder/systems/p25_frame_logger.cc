@@ -162,7 +162,11 @@ std::string P25FrameLogger::decode_status(const TrunkMessage &msg) const {
 
 std::string P25FrameLogger::opcode_name(unsigned long opcode, unsigned long mfid,
                                         int frame_type) const {
-  if (frame_type == 19) { // LCW — Link Control Word (LCCO opcode)
+  if (frame_type == 19) { // LCW or ESS (type 19 carries both)
+    // ESS frames carry algid in the opcode field; all standard algids are > 0x3f
+    // (outside the valid 6-bit LCCO range), so this check is unambiguous.
+    if (opcode > 0x3f)
+      return "ESS_ENC_SYNC";
     switch (opcode) {
       case 0x00: return "LCW_GRP_V_CH_USER";         // Group Voice Channel User
       case 0x01: return "LCW_RESERVED_01";
@@ -297,7 +301,7 @@ std::string P25FrameLogger::format_record(const TrunkMessage &msg,
     case 12: frame_type_str = "MBT";     break;
     case 15: frame_type_str = "TDULC";   break;
     case 18: frame_type_str = "MAC_PDU"; break;
-    case 19: frame_type_str = "LCW";     break;
+    case 19: frame_type_str = (msg.duid == 0x09) ? "ESS" : "LCW"; break;
     case 20: frame_type_str = "RAW_PDU"; break;
     default: frame_type_str = std::to_string(frame_type); break;
   }
