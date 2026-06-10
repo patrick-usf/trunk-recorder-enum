@@ -315,6 +315,19 @@ namespace gr {
                 vf_tgid   = ((HB[j+5] & 0x0f) << 12) + (HB[j+6] << 6) +  HB[j+7];				// 16 bit TGID
 
                 curr_grp_id = vf_tgid;
+
+                std::string hdu_pdu(17, '\0');
+                hdu_pdu[0]  = (framer->nac >> 8) & 0xff;
+                hdu_pdu[1]  =  framer->nac       & 0xff;
+                for (int k = 0; k < 9; k++) hdu_pdu[2 + k] = ess_mi[k];
+                hdu_pdu[11] = (uint8_t)MFID;
+                hdu_pdu[12] = ess_algid;
+                hdu_pdu[13] = (ess_keyid >> 8) & 0xff;
+                hdu_pdu[14] =  ess_keyid       & 0xff;
+                hdu_pdu[15] = (vf_tgid   >> 8) & 0xff;
+                hdu_pdu[16] =  vf_tgid         & 0xff;
+                send_msg(hdu_pdu, M_P25_HDU);
+
                 if (d_debug >= 10) {
                     fprintf (stderr, "ESS: tgid=%d, mfid=%x, algid=%x, keyid=%x, mi=%02x %02x %02x %02x %02x %02x %02x %02x %02x",
                             vf_tgid, MFID, ess_algid, ess_keyid,

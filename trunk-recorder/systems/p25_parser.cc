@@ -1251,6 +1251,7 @@ std::vector<TrunkMessage> P25Parser::parse_message(gr::message::sptr msg, System
     return messages;
   } else if (type == 15) { // TDULC — Terminator Data Unit with Link Control (DUID 0x0F)
     BOOST_LOG_TRIVIAL(debug) << "P25 Parser: TDULC on control channel. Retuning to next control channel.";
+    message.nac = nac;
     message.message_type = TDULC;
     message.direction = DIR_OSP;
     message.duid = 0x0f;
@@ -1270,10 +1271,11 @@ std::vector<TrunkMessage> P25Parser::parse_message(gr::message::sptr msg, System
     //   mi[0..8](9) + algid(1) + keyid_hi(1) + keyid_lo(1)
     // LCW (Link Control Word) from LDU1 or TDULC: length==10 after NAC strip
     //   lcw[0..8](9) + source_duid(1)
-    if (s.length() >= 12) { // ESS from LDU2 (DUID 0x09)
+    message.nac = nac;
+    if (s.length() >= 12) { // ESS from LDU2 (DUID 0x0a)
       uint8_t  algid = (uint8_t)s[9];
       uint16_t keyid = ((uint8_t)s[10] << 8) | (uint8_t)s[11];
-      message.duid      = 0x09;
+      message.duid      = 0x0a;
       message.direction = DIR_OSP;
       message.opcode    = algid;   // algid as opcode — all standard algids > 0x3f,
                                    // outside valid LCCO range, so distinguishable in logger
@@ -1324,6 +1326,7 @@ std::vector<TrunkMessage> P25Parser::parse_message(gr::message::sptr msg, System
     P25FrameLogger::instance().log_messages(messages, system, 19);
     return messages;
   } else if (type == 18) { // Phase 2 TDMA manufacturer-specific MAC PDU
+    message.nac = nac;
     if (s.length() >= 3) {
       message.opcode    = (uint8_t)s[0] & 0x3f;
       message.mfid      = (uint8_t)s[1];
@@ -1342,6 +1345,7 @@ std::vector<TrunkMessage> P25Parser::parse_message(gr::message::sptr msg, System
     P25FrameLogger::instance().log_messages(messages, system, 18);
     return messages;
   } else if (type == 20) { // non-MBT PDU header forwarded for logging
+    message.nac = nac;
     if (s.length() >= 3) {
       message.mfid      = 0;
       message.opcode    = (uint8_t)s[0] & 0x1f; // fmt field
@@ -1358,6 +1362,35 @@ std::vector<TrunkMessage> P25Parser::parse_message(gr::message::sptr msg, System
     message.message_type = UNKNOWN;
     messages.push_back(message);
     P25FrameLogger::instance().log_messages(messages, system, 20);
+    return messages;
+  } else if (type == 22) { // HDU — Header Data Unit, call start (DUID 0x00)
+    // payload: MI(9) + MFID(1) + algid(1) + keyid(2) + tgid(2) = 15 bytes after NAC strip
+    message.nac = nac;
+    if (s.length() >= 15) {
+      uint8_t  mfid  = (uint8_t)s[9];
+      uint8_t  algid = (uint8_t)s[10];
+      uint16_t keyid = ((uint8_t)s[11] << 8) | (uint8_t)s[12];
+      uint16_t tgid  = ((uint8_t)s[13] << 8) | (uint8_t)s[14];
+      message.duid      = 0x00;
+      message.direction = DIR_OSP;
+      message.opcode    = algid;   // algid — all standard P25 algids > 0x3f
+      message.mfid      = mfid;
+      message.talkgroup = tgid;
+      message.encrypted = (algid != 0x80);
+
+      std::ostringstream raw;
+      raw << "hdu algid=0x" << std::hex << std::setfill('0') << std::setw(2) << (unsigned int)algid
+          << " keyid=0x"    << std::setw(4) << keyid
+          << " tgid="       << std::dec    << tgid
+          << " mi=";
+      for (int i = 0; i < 9; i++)
+        raw << std::hex << std::setfill('0') << std::setw(2) << (unsigned int)(uint8_t)s[i];
+      message.raw_frame = raw.str();
+      message.meta      = message.raw_frame;
+    }
+    message.message_type = UNKNOWN;
+    messages.push_back(message);
+    P25FrameLogger::instance().log_messages(messages, system, 22);
     return messages;
   }
   messages.push_back(message);

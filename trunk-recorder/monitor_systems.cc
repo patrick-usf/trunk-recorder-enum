@@ -1,4 +1,5 @@
 #include "monitor_systems.h"
+#include "recorders/p25_recorder_impl.h"
 using namespace std;
 
 volatile sig_atomic_t exit_flag = 0;
@@ -861,6 +862,16 @@ int monitor_messages(Config &config, gr::top_block_sptr &tb, std::vector<Source 
         }
       }
     }
+    // Poll traffic channel frame queues so HDU/LCW/ESS reach the logger
+    if (P25FrameLogger::instance().is_open()) {
+      for (vector<Call *>::iterator call_it = calls.begin(); call_it != calls.end(); call_it++) {
+        Call *call = *call_it;
+        if (!call->get_recorder() || call->get_system()->get_system_type() != "p25") continue;
+        p25_recorder_impl *p25rec = dynamic_cast<p25_recorder_impl *>(call->get_recorder());
+        if (p25rec) p25rec->flush_traffic_frames(p25_parser, call->get_system());
+      }
+    }
+
     current_time = time(NULL);
     current_time_ms = time_since_epoch_millisec();
     if ((current_time_ms - last_conventional_channel_detection_check) >= 0.1) {

@@ -92,7 +92,7 @@ void p25_recorder_decode::initialize(int silence_frames, bool d_soft_vocoder) {
   const char *udp_host = "127.0.0.1";
   bool do_imbe = 1;
   bool do_output = 1;
-  bool do_msgq = 0;
+  bool do_msgq = 1;
   bool do_audio_output = 1;
   bool do_tdma = 0;
   bool do_nocrypt = 1;
@@ -118,6 +118,10 @@ void p25_recorder_decode::plugin_callback_handler(int16_t *samples, int sampleCo
   if (d_call) {
     plugman_audio_callback(d_call, d_recorder, samples, sampleCount);
   }
+}
+
+gr::msg_queue::sptr p25_recorder_decode::get_rx_queue() const {
+  return rx_queue;
 }
 
 double p25_recorder_decode::get_output_sample_rate() {

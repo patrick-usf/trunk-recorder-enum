@@ -202,6 +202,11 @@ std::string P25FrameLogger::opcode_name(unsigned long opcode, unsigned long mfid
       default:   return "LCW_UNKNOWN";
     }
   }
+  if (frame_type == 22) { // HDU — opcode field carries algid; > 0x3f means encrypted
+    if (opcode == 0x80) return "HDU_CLEAR";
+    if (opcode >  0x3f) return "HDU_ENC";
+    return "HDU_CLEAR"; // algid 0x00..0x3f — treat as clear
+  }
   if (frame_type == 12) { // MBT
     if (mfid == 0x90) {
       switch (opcode) {
@@ -301,8 +306,9 @@ std::string P25FrameLogger::format_record(const TrunkMessage &msg,
     case 12: frame_type_str = "MBT";     break;
     case 15: frame_type_str = "TDULC";   break;
     case 18: frame_type_str = "MAC_PDU"; break;
-    case 19: frame_type_str = (msg.duid == 0x09) ? "ESS" : "LCW"; break;
+    case 19: frame_type_str = (msg.duid == 0x0a) ? "ESS" : "LCW"; break;
     case 20: frame_type_str = "RAW_PDU"; break;
+    case 22: frame_type_str = "HDU";     break;
     default: frame_type_str = std::to_string(frame_type); break;
   }
 

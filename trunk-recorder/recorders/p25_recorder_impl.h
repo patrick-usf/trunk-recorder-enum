@@ -1,6 +1,9 @@
 #ifndef P25_RECORDER_IMPL_H
 #define P25_RECORDER_IMPL_H
 
+class P25Parser;
+class System;
+
 #define _USE_MATH_DEFINES
 
 #include <cstdio>
@@ -110,6 +113,7 @@ public:
   long elapsed();
   Source *get_source();
   void autotune();
+  void flush_traffic_frames(P25Parser *parser, System *system);
 
 protected:
   State state;

@@ -73,6 +73,7 @@ public:
   double get_output_sample_rate();
   State get_state();
   gr::op25_repeater::p25_frame_assembler::sptr get_transmission_sink();
+  gr::msg_queue::sptr get_rx_queue() const;
 
 };
 #endif

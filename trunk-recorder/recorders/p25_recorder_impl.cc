@@ -2,6 +2,7 @@
 #include "p25_recorder_impl.h"
 #include "../formatter.h"
 #include "p25_recorder.h"
+#include "../systems/p25_parser.h"
 #include <boost/log/trivial.hpp>
 
 p25_recorder_sptr make_p25_recorder(Source *src, Recorder_Type type) {
@@ -174,6 +175,21 @@ State p25_recorder_impl::get_state() {
 
 bool p25_recorder_impl::is_enabled() {
   return source->is_selector_port_enabled(selector_port);
+}
+
+void p25_recorder_impl::flush_traffic_frames(P25Parser *parser, System *system) {
+  // Drain the op25 frame queue from the active traffic channel decode block
+  // and route through the parser so traffic channel frames (HDU, LCW, ESS)
+  // reach P25FrameLogger. We do NOT call handle_message() because these are
+  // in-call frames that should not trigger new grants or registrations.
+  auto *decode = qpsk_mod ? qpsk_p25_decode.get() : fsk4_p25_decode.get();
+  gr::msg_queue::sptr q = decode->get_rx_queue();
+  gr::message::sptr msg;
+  while ((msg = q->delete_head_nowait()) != 0) {
+    if (msg->type() >= 0) { // skip timeout (-1) and special negative types
+      parser->parse_message(msg, system);
+    }
+  }
 }
 
 void p25_recorder_impl::set_enabled(bool enabled) {

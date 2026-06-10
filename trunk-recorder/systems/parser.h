@@ -41,30 +41,30 @@ struct PatchData {
 };
 
 struct TrunkMessage {
-  MessageType message_type;
+  MessageType message_type = UNKNOWN;
   std::string meta;
-  double freq;
-  long talkgroup;
-  bool encrypted;
-  bool emergency;
-  bool duplex;
-  bool mode;
-  int priority;
-  int tdma_slot;
-  bool phase2_tdma;
-  long source;
-  int sys_num;
-  unsigned long sys_id;
-  int sys_rfss;
-  int sys_site_id;
-  unsigned long nac;
-  unsigned long wacn;
-  PatchData patch_data;
-  unsigned long opcode;
-  unsigned long mfid;        // Manufacturer ID byte (0x00=standard, 0x90=Motorola, 0xA4=M/A-COM)
-  FrameDirection direction;  // DIR_OSP=downlink, DIR_ISP=uplink
-  std::string raw_frame;     // hex-encoded raw bytes for unknown/undecoded frames
-  uint8_t duid;              // P25 DUID from NID (0x07=TSBK, 0x0c=PDU, 0x0f=TDULC, 0x05=LDU1, etc.)
+  double freq = 0.0;
+  long talkgroup = 0;
+  bool encrypted = false;
+  bool emergency = false;
+  bool duplex = false;
+  bool mode = false;
+  int priority = 0;
+  int tdma_slot = 0;
+  bool phase2_tdma = false;
+  long source = -1;
+  int sys_num = 0;
+  unsigned long sys_id = 0;
+  int sys_rfss = 0;
+  int sys_site_id = 0;
+  unsigned long nac = 0;
+  unsigned long wacn = 0;
+  PatchData patch_data = {};
+  unsigned long opcode = 255;
+  unsigned long mfid = 0;        // Manufacturer ID byte (0x00=standard, 0x90=Motorola, 0xA4=M/A-COM)
+  FrameDirection direction = DIR_UNKNOWN;  // DIR_OSP=downlink, DIR_ISP=uplink
+  std::string raw_frame;         // hex-encoded raw bytes for unknown/undecoded frames
+  uint8_t duid = 0;              // P25 DUID from NID (0x07=TSBK, 0x0c=PDU, 0x0f=TDULC, 0x05=LDU1, etc.)
 };
 
 class TrunkParser {
