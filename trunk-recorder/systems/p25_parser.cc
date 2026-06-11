@@ -1323,12 +1323,28 @@ std::vector<TrunkMessage> P25Parser::parse_message(gr::message::sptr msg, System
                                    // outside valid LCCO range, so distinguishable in logger
       message.encrypted = (algid != 0x80);
 
+      std::array<uint8_t, 9> mi_now;
+      bool mi_zero = true;
+      for (int i = 0; i < 9; i++) {
+        mi_now[i] = (uint8_t)s[i];
+        if (mi_now[i] != 0) mi_zero = false;
+      }
+
+      bool mi_changed = false;
+      auto mit = last_ess_mi_.find(fallback_freq);
+      if (mit == last_ess_mi_.end() || mit->second != mi_now) {
+        mi_changed = true;
+        last_ess_mi_[fallback_freq] = mi_now;
+      }
+
       std::ostringstream raw;
       raw << "ess algid=0x" << std::hex << std::setfill('0') << std::setw(2) << (unsigned int)algid
           << " keyid=0x"    << std::setw(4) << keyid
           << " mi=";
       for (int i = 0; i < 9; i++)
-        raw << std::setw(2) << (unsigned int)(uint8_t)s[i];
+        raw << std::setw(2) << (unsigned int)mi_now[i];
+      if (mi_zero && algid != 0x80) raw << " mi_zero=1";
+      if (mi_changed)               raw << " mi_changed=1";
       message.raw_frame = raw.str();
       message.meta      = message.raw_frame;
     } else if (s.length() >= 9) { // LCW from LDU1 or TDULC
@@ -1476,6 +1492,10 @@ std::vector<TrunkMessage> P25Parser::parse_message(gr::message::sptr msg, System
       message.talkgroup = tgid;
       message.encrypted = (algid != 0x80);
 
+      bool mi_zero = true;
+      for (int i = 0; i < 9; i++)
+        if ((uint8_t)s[i] != 0) { mi_zero = false; break; }
+
       std::ostringstream raw;
       raw << "hdu algid=0x" << std::hex << std::setfill('0') << std::setw(2) << (unsigned int)algid
           << " keyid=0x"    << std::setw(4) << keyid
@@ -1483,6 +1503,7 @@ std::vector<TrunkMessage> P25Parser::parse_message(gr::message::sptr msg, System
           << " mi=";
       for (int i = 0; i < 9; i++)
         raw << std::hex << std::setfill('0') << std::setw(2) << (unsigned int)(uint8_t)s[i];
+      if (mi_zero && algid != 0x80) raw << " mi_zero=1";
       message.raw_frame = raw.str();
       message.meta      = message.raw_frame;
     }

@@ -10,6 +10,7 @@
 #include "system_impl.h"
 #include <iomanip>
 #include <iostream>
+#include <array>
 #include <map>
 #include <vector>
 
@@ -30,6 +31,7 @@ class P25Parser : public TrunkParser {
   std::map<int, std::map<int, Freq_Table>> freq_tables;
   std::map<int, Freq_Table>::iterator it;
   bool custom_freq_table_loaded = false;
+  std::map<double, std::array<uint8_t, 9>> last_ess_mi_; // keyed by fallback_freq (channel Hz)
 
 public:
   P25Parser();
