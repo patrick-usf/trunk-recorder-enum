@@ -1350,7 +1350,35 @@ std::vector<TrunkMessage> P25Parser::parse_message(gr::message::sptr msg, System
             message.message_type = UU_V_GRANT;
           }
         } else { // SF=1: abbreviated format, no MFID, s[1..8] are all payload
-          if (lco == 0x23) { // RFSS Status Broadcast (abbreviated)
+          if (lco == 0x02) { // Group Voice Channel Update (abbreviated)
+            // Per TIA-102.AABC-C §7.9.2.1 and op25 p25p1_fdma.cc:
+            // s[1:2] = 16-bit ch_A: bits[15:12]=IDEN, bits[11:0]=CHAN
+            // s[3:4] = GROUP_A address (16-bit talkgroup)
+            // s[5:6] = 16-bit ch_B: same encoding
+            // s[7:8] = GROUP_B address (16-bit talkgroup)
+            uint16_t ch_a  = ((uint8_t)s[1] << 8) | (uint8_t)s[2];
+            uint16_t tg_a  = ((uint8_t)s[3] << 8) | (uint8_t)s[4];
+            uint16_t ch_b  = ((uint8_t)s[5] << 8) | (uint8_t)s[6];
+            uint16_t tg_b  = ((uint8_t)s[7] << 8) | (uint8_t)s[8];
+            double freq_a  = channel_id_to_frequency(ch_a, sys_num) / 1e6;
+            double freq_b  = channel_id_to_frequency(ch_b, sys_num) / 1e6;
+            message.talkgroup    = tg_a;
+            message.message_type = GRANT;
+            std::ostringstream m;
+            m << std::fixed << std::setprecision(4);
+            m << "ch_update"
+              << " chA_iden=" << ((ch_a >> 12) & 0xf)
+              << " chA_num="  << (ch_a & 0xfff)
+              << " chA_freq=" << freq_a
+              << " tgA="      << tg_a;
+            if (ch_b != ch_a || tg_b != tg_a) {
+              m << " chB_iden=" << ((ch_b >> 12) & 0xf)
+                << " chB_num="  << (ch_b & 0xfff)
+                << " chB_freq=" << freq_b
+                << " tgB="      << tg_b;
+            }
+            message.meta = m.str();
+          } else if (lco == 0x23) { // RFSS Status Broadcast (abbreviated)
             // s[1]      = LMC (Link Modification Control)
             // s[2][7:4] = RFSS_ID[3:0], s[2][3:0]+s[3] = SYS_ID[11:0]
             // s[4]      = SSN / RFSS status

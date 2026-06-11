@@ -66,12 +66,13 @@ public:
 
 static void print_usage(const char *prog) {
   std::cerr << "Usage: " << prog << "\n"
-            << "  --zmq    <address>  ZMQ SUB address (e.g. tcp://127.0.0.1:5556)\n"
-            << "  --center <hz>       SDR center frequency in Hz\n"
-            << "  --rate   <sps>      SDR sample rate in samples/s\n"
-            << "  --freq   <hz>       Data channel frequency in Hz (repeat for each channel)\n"
-            << "  --log    <path>     Output TSV log file path\n"
-            << " [--sys-name <name>]  System short name for log (default: data-monitor)\n";
+            << "  --zmq        <address>  ZMQ SUB address (e.g. tcp://127.0.0.1:5556)\n"
+            << "  --center     <hz>       SDR center frequency in Hz\n"
+            << "  --rate       <sps>      SDR sample rate in samples/s\n"
+            << "  --freq       <hz>       Data channel frequency in Hz (repeat for each channel)\n"
+            << "  --log        <path>     Output TSV log file path\n"
+            << " [--sys-name   <name>]    System short name for log (default: data-monitor)\n"
+            << " [--freq-table <path>]    CSV freq table (TABLEID,TYPE,BASE,SPACING,OFFSET)\n";
 }
 
 // Per-channel state held for the lifetime of the flowgraph.
@@ -91,26 +92,29 @@ int main(int argc, char **argv) {
   std::vector<double> data_freqs;
   std::string         log_path;
   std::string         sys_name = "data-monitor";
+  std::string         freq_table_path;
 
   static const struct option long_opts[] = {
-    { "zmq",      required_argument, 0, 'z' },
-    { "center",   required_argument, 0, 'c' },
-    { "rate",     required_argument, 0, 'r' },
-    { "freq",     required_argument, 0, 'f' },
-    { "log",      required_argument, 0, 'l' },
-    { "sys-name", required_argument, 0, 'n' },
+    { "zmq",        required_argument, 0, 'z' },
+    { "center",     required_argument, 0, 'c' },
+    { "rate",       required_argument, 0, 'r' },
+    { "freq",       required_argument, 0, 'f' },
+    { "log",        required_argument, 0, 'l' },
+    { "sys-name",   required_argument, 0, 'n' },
+    { "freq-table", required_argument, 0, 't' },
     { 0, 0, 0, 0 }
   };
 
   int opt, idx;
-  while ((opt = getopt_long(argc, argv, "z:c:r:f:l:n:", long_opts, &idx)) != -1) {
+  while ((opt = getopt_long(argc, argv, "z:c:r:f:l:n:t:", long_opts, &idx)) != -1) {
     switch (opt) {
-      case 'z': zmq_addr   = optarg;                      break;
-      case 'c': sdr_center = std::stod(optarg);           break;
-      case 'r': sdr_rate   = std::stod(optarg);           break;
-      case 'f': data_freqs.push_back(std::stod(optarg));  break;
-      case 'l': log_path   = optarg;                      break;
-      case 'n': sys_name   = optarg;                      break;
+      case 'z': zmq_addr        = optarg;                      break;
+      case 'c': sdr_center      = std::stod(optarg);           break;
+      case 'r': sdr_rate        = std::stod(optarg);           break;
+      case 'f': data_freqs.push_back(std::stod(optarg));       break;
+      case 'l': log_path        = optarg;                      break;
+      case 'n': sys_name        = optarg;                      break;
+      case 't': freq_table_path = optarg;                      break;
       default:
         print_usage(argv[0]);
         return 1;
@@ -185,6 +189,8 @@ int main(int argc, char **argv) {
   // Single-threaded: drain each chain's rx_queue in round-robin.
   // P25Parser and P25FrameLogger are not touched concurrently.
   P25Parser parser;
+  if (!freq_table_path.empty())
+    parser.load_freq_table(freq_table_path, sys->get_sys_num());
 
   while (running) {
     bool got_msg = false;
