@@ -730,24 +730,28 @@ std::vector<TrunkMessage> P25Parser::decode_tsbk(boost::dynamic_bitset<> &tsbk, 
        << " svcopt=0x" << std::hex << std::setfill('0') << std::setw(2) << svcopt;
     message.meta = os.str();
     BOOST_LOG_TRIVIAL(debug) << "tsbk15 " << os.str();
-  } else if (opcode == 0x16) { // SNDCP_CH_ANNOUNCE_EXP — OSP: tower announces SNDCP data channel pair
-    // bits[79:64] = chan_A (IDEN[3:0] + CHAN[11:0]), bits[63:48] = chan_B (same encoding, 0xffff = none)
-    unsigned long chan_a = bitset_shift_mask(tsbk, 64, 0xffff);
-    unsigned long chan_b = bitset_shift_mask(tsbk, 48, 0xffff);
-    unsigned long fa     = channel_id_to_frequency(chan_a, sys_num);
-    unsigned long fb     = channel_id_to_frequency(chan_b, sys_num);
+  } else if (opcode == 0x16) { // SNDCP_CH_ANNOUNCE_EXP (mfid=0x00) or MOT_UNKNOWN_16 (mfid=0x90)
+    if (message.mfid == 0x00) {
+      // bits[79:64] = chan_A (IDEN[3:0] + CHAN[11:0]), bits[63:48] = chan_B (same encoding, 0xffff = none)
+      unsigned long chan_a = bitset_shift_mask(tsbk, 64, 0xffff);
+      unsigned long chan_b = bitset_shift_mask(tsbk, 48, 0xffff);
+      unsigned long fa     = channel_id_to_frequency(chan_a, sys_num);
+      unsigned long fb     = channel_id_to_frequency(chan_b, sys_num);
 
-    message.freq = fa ? fa : fb;
+      message.freq = fa ? fa : fb;
 
-    os << "sndcp_announce"
-       << " chA=" << channel_to_string(chan_a, sys_num)
-       << "(" << channel_id_to_freq_string(chan_a, sys_num) << ")";
-    if (chan_b != 0xffff) {
-      os << " chB=" << channel_to_string(chan_b, sys_num)
-         << "(" << channel_id_to_freq_string(chan_b, sys_num) << ")";
+      os << "sndcp_announce"
+         << " chA=" << channel_to_string(chan_a, sys_num)
+         << "(" << channel_id_to_freq_string(chan_a, sys_num) << ")";
+      if (chan_b != 0xffff) {
+        os << " chB=" << channel_to_string(chan_b, sys_num)
+           << "(" << channel_id_to_freq_string(chan_b, sys_num) << ")";
+      }
+      message.meta = os.str();
+      BOOST_LOG_TRIVIAL(debug) << "tsbk16 " << os.str();
     }
-    message.meta = os.str();
-    BOOST_LOG_TRIVIAL(debug) << "tsbk16 " << os.str();
+    // mfid != 0x00: leave message_type=UNKNOWN and raw_frame empty;
+    // the auto-fill below captures raw bytes under the correct opcode name.
   } else if (opcode == 0x18) {
     BOOST_LOG_TRIVIAL(debug) << "tsbk18: Status Update";
   } else if (opcode == 0x1a) {
