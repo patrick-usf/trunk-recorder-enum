@@ -395,6 +395,92 @@ std::vector<TrunkMessage> P25Parser::decode_tsbk(boost::dynamic_bitset<> &tsbk, 
   message.patch_data.ga3 = 0;
 
   BOOST_LOG_TRIVIAL(trace) << "TSBK: opcode: $" << std::hex << opcode;
+
+  // ISP (Radio→FNE): PI bit (bit 6 of byte 0) set — route before OSP chain to
+  // avoid collisions where ISP and OSP share the same 6-bit opcode value.
+  unsigned long pi = bitset_shift_mask(tsbk, 94, 0x01);
+  if (pi) {
+    message.direction = DIR_ISP;
+    message.opcode    = 0x40 | opcode; // PI-extended for TSV logging (matches op25 convention)
+
+    if (opcode == 0x00) { // 0x40 GRP_V_CH_REQ
+      unsigned long sa = bitset_shift_mask(tsbk, 48, 0xffffff);
+      unsigned long ga = bitset_shift_mask(tsbk, 32, 0xffff);
+      message.source    = sa;
+      message.talkgroup = ga;
+      os << "grp_v_ch_req wuid=" << std::dec << sa << " tg=" << ga;
+      message.meta = os.str();
+      BOOST_LOG_TRIVIAL(debug) << "tsbk40 " << os.str();
+    } else if (opcode == 0x04) { // 0x44 UU_V_CH_REQ
+      unsigned long sa   = bitset_shift_mask(tsbk, 48, 0xffffff);
+      unsigned long dest = bitset_shift_mask(tsbk, 24, 0xffffff);
+      message.source    = sa;
+      message.talkgroup = dest;
+      os << "uu_v_ch_req wuid=" << std::dec << sa << " dest=" << dest;
+      message.meta = os.str();
+      BOOST_LOG_TRIVIAL(debug) << "tsbk44 " << os.str();
+    } else if (opcode == 0x15) { // 0x55 SNDCP_CH_REQ (true uplink; PI=0 echo handled below)
+      unsigned long svcopt = bitset_shift_mask(tsbk, 72, 0xff);
+      unsigned long sa     = bitset_shift_mask(tsbk, 16, 0xffffff);
+      message.source = sa;
+      os << "sndcp_req wuid=" << std::dec << sa
+         << " svcopt=0x" << std::hex << std::setfill('0') << std::setw(2) << svcopt;
+      message.meta = os.str();
+      BOOST_LOG_TRIVIAL(debug) << "tsbk55 " << os.str();
+    } else if (opcode == 0x16) { // 0x56 GRP_AFF_REQ
+      unsigned long ga = bitset_shift_mask(tsbk, 48, 0xffff);
+      unsigned long sa = bitset_shift_mask(tsbk, 24, 0xffffff);
+      message.source    = sa;
+      message.talkgroup = ga;
+      os << "grp_aff_req wuid=" << std::dec << sa << " tg=" << ga;
+      message.meta = os.str();
+      BOOST_LOG_TRIVIAL(debug) << "tsbk56 " << os.str();
+    } else if (opcode == 0x17) { // 0x57 U_DEREG_REQ
+      unsigned long sa = bitset_shift_mask(tsbk, 32, 0xffffff);
+      message.source = sa;
+      os << "u_dereg_req wuid=" << std::dec << sa;
+      message.meta = os.str();
+      BOOST_LOG_TRIVIAL(debug) << "tsbk57 " << os.str();
+    } else if (opcode == 0x18) { // 0x58 LOC_REG_REQ
+      unsigned long sa = bitset_shift_mask(tsbk, 32, 0xffffff);
+      message.source = sa;
+      os << "loc_reg_req wuid=" << std::dec << sa;
+      message.meta = os.str();
+      BOOST_LOG_TRIVIAL(debug) << "tsbk58 " << os.str();
+    } else if (opcode == 0x1a) { // 0x5A U_REG_REQ
+      unsigned long sa = bitset_shift_mask(tsbk, 32, 0xffffff);
+      message.source = sa;
+      os << "u_reg_req wuid=" << std::dec << sa;
+      message.meta = os.str();
+      BOOST_LOG_TRIVIAL(debug) << "tsbk5a " << os.str();
+    } else {
+      BOOST_LOG_TRIVIAL(debug) << "tsbk_isp_unknown: op=0x" << std::hex << message.opcode
+                               << " mfid=0x" << message.mfid;
+    }
+
+    // Capture raw bytes for all ISP frames
+    {
+      std::ostringstream raw;
+      raw << "op=0x" << std::hex << std::setfill('0') << std::setw(2) << (unsigned int)message.opcode
+          << " mfid=0x" << std::setw(2) << message.mfid << " bytes=";
+      boost::dynamic_bitset<> tmp = tsbk >> 16;
+      for (int _i = 11; _i >= 0; _i--) {
+        uint8_t _b = 0;
+        for (int _j = 7; _j >= 0; _j--)
+          _b = (_b << 1) | (unsigned int)tmp[_i * 8 + _j];
+        raw << std::hex << std::setfill('0') << std::setw(2) << (unsigned int)_b;
+      }
+      message.raw_frame = raw.str();
+    }
+    if (message.meta.empty()) {
+      std::ostringstream ms;
+      ms << "isp_tsbk op=0x" << std::hex << (unsigned int)message.opcode;
+      message.meta = ms.str();
+    }
+    messages.push_back(message);
+    return messages;
+  }
+
   if (opcode == 0x00) { // group voice chan grant
     // Group Voice Channel Grant (GRP_V_CH_GRANT)
 

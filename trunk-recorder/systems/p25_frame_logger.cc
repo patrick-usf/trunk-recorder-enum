@@ -291,6 +291,18 @@ std::string P25FrameLogger::opcode_name(unsigned long opcode, unsigned long mfid
     case 0x3d: return "TSBK_IDEN_UP";
     case 0x3e: return "TSBK_PROTECTED_SITE_DATA";
     case 0x3f: return "TSBK_RESERVED_3F";
+    // ISP (Radio→FNE) opcodes — PI-extended (PI bit | 6-bit opcode)
+    case 0x40: return "TSBK_ISP_GRP_V_CH_REQ";
+    case 0x44: return "TSBK_ISP_UU_V_CH_REQ";
+    case 0x45: return "TSBK_ISP_UU_ANS_RSP";
+    case 0x54: return "TSBK_ISP_IDEN_UP_VU_REQ";
+    case 0x55: return "TSBK_ISP_SNDCP_CH_REQ";
+    case 0x56: return "TSBK_ISP_GRP_AFF_REQ";
+    case 0x57: return "TSBK_ISP_U_DEREG_REQ";
+    case 0x58: return "TSBK_ISP_LOC_REG_REQ";
+    case 0x5a: return "TSBK_ISP_U_REG_REQ";
+    case 0x5b: return "TSBK_ISP_AUTH_RESP";
+    case 0x5c: return "TSBK_ISP_AUTH_FNE_RSP";
     default:   return "TSBK_UNKNOWN";
   }
 }
