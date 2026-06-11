@@ -943,6 +943,16 @@ std::vector<TrunkMessage> P25Parser::decode_tsbk(boost::dynamic_bitset<> &tsbk, 
           6.25};
       add_freq_table(iden, temp_table, sys_num);
       BOOST_LOG_TRIVIAL(debug) << "tsbk33 iden up tdma id " << std::dec << iden << " f " << temp_table.frequency << " offset " << temp_table.offset << " spacing " << temp_table.step << " slots/carrier " << temp_table.slots_per_carrier;
+
+      std::ostringstream m33;
+      m33 << std::fixed << std::setprecision(5);
+      m33 << "iden=" << iden
+          << " chan_type=" << channel_type
+          << " slots=" << slots_per_carrier[channel_type]
+          << " base_mhz=" << (temp_table.frequency / 1e6)
+          << " step_khz=" << std::setprecision(3) << (temp_table.step / 1e3)
+          << " txoff_mhz=" << std::showpos << (temp_table.offset / 1e6) << std::noshowpos;
+      message.meta = m33.str();
     }
   } else if (opcode == 0x34) { // iden_up vhf uhf
     unsigned long iden = bitset_shift_mask(tsbk, 76, 0xf);
