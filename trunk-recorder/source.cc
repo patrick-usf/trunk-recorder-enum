@@ -461,6 +461,16 @@ void Source::create_digital_recorders(gr::top_block_sptr tb, int r) {
 
   if (r > 0) {
     attach_selector(tb);
+  } else if (!zmq_address_.empty() && !attached_selector) {
+    // ZMQ-only mode: connect publisher directly to source, skip the selector
+    // (selector requires at least one output; with 0 recorders it would crash)
+    attached_selector = true;
+    zmq_pub_ = gr::zeromq::pub_sink::make(
+        sizeof(gr_complex), 1,
+        const_cast<char *>(zmq_address_.c_str()),
+        100, false, -1, "", true, true);
+    tb->connect(source_block, 0, zmq_pub_, 0);
+    BOOST_LOG_TRIVIAL(info) << "ZMQ IQ publisher active at " << zmq_address_;
   }
   max_digital_recorders = r;
 
