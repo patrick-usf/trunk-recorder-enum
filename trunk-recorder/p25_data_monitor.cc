@@ -74,7 +74,8 @@ static void print_usage(const char *prog) {
             << "  --freq       <hz>       Data channel frequency in Hz (repeat for each channel)\n"
             << "  --log        <path>     Output TSV log file path\n"
             << " [--sys-name   <name>]    System short name for log (default: data-monitor)\n"
-            << " [--freq-table <path>]    CSV freq table (TABLEID,TYPE,BASE,SPACING,OFFSET)\n";
+            << " [--freq-table <path>]    CSV freq table (TABLEID,TYPE,BASE,SPACING,OFFSET)\n"
+            << " [--nac        <hex>]     Expected NAC (e.g. 0x842); frames with other NACs excluded from decoded/known counts\n";
 }
 
 // Per-channel state held for the lifetime of the flowgraph.
@@ -95,6 +96,7 @@ int main(int argc, char **argv) {
   std::string         log_path;
   std::string         sys_name = "data-monitor";
   std::string         freq_table_path;
+  unsigned long       filter_nac = 0; // 0 = accept any non-zero NAC
 
   static const struct option long_opts[] = {
     { "zmq",        required_argument, 0, 'z' },
@@ -104,11 +106,12 @@ int main(int argc, char **argv) {
     { "log",        required_argument, 0, 'l' },
     { "sys-name",   required_argument, 0, 'n' },
     { "freq-table", required_argument, 0, 't' },
+    { "nac",        required_argument, 0, 'a' },
     { 0, 0, 0, 0 }
   };
 
   int opt, idx;
-  while ((opt = getopt_long(argc, argv, "z:c:r:f:l:n:t:", long_opts, &idx)) != -1) {
+  while ((opt = getopt_long(argc, argv, "z:c:r:f:l:n:t:a:", long_opts, &idx)) != -1) {
     switch (opt) {
       case 'z': zmq_addr        = optarg;                      break;
       case 'c': sdr_center      = std::stod(optarg);           break;
@@ -117,6 +120,7 @@ int main(int argc, char **argv) {
       case 'l': log_path        = optarg;                      break;
       case 'n': sys_name        = optarg;                      break;
       case 't': freq_table_path = optarg;                      break;
+      case 'a': filter_nac      = std::stoul(optarg, nullptr, 0); break;
       default:
         print_usage(argv[0]);
         return 1;
@@ -195,11 +199,13 @@ int main(int argc, char **argv) {
     parser.load_freq_table(freq_table_path, sys->get_sys_num());
 
   // Per-chain decode-rate counters. Every 60 s, emit a stats line to stderr.
-  // "raw_msgs" = all rx_q outputs including timeouts/errors (msg->type() any).
-  // "known"    = messages where at least one frame decoded to a non-UNKNOWN type.
+  // "raw"     = all rx_q outputs including timeouts/errors (msg->type() any).
+  // "decoded" = msg->type() >= 0 AND returned NAC matches --nac (or any non-zero if --nac omitted).
+  // "known"   = decoded AND message_type is a recognized P25 frame type (not UNKNOWN/INVALID).
   struct ChainStats {
-    long raw_msgs = 0;   // all rx_q messages this window
-    long known    = 0;   // msgs yielding at least one frame with known message_type
+    long raw     = 0;
+    long decoded = 0;
+    long known   = 0;
   };
   std::vector<ChainStats> cstats(chains.size());
   time_t stats_window_start = time(nullptr);
@@ -211,15 +217,19 @@ int main(int argc, char **argv) {
       auto &c = chains[i];
       gr::message::sptr msg = c.rx_q->delete_head_nowait();
       if (msg) {
-        cstats[i].raw_msgs++;
+        cstats[i].raw++;
         if (msg->type() >= 0) {
           auto msgs = parser.parse_message(msg, sys, c.freq);
+          bool nac_ok = false, type_ok = false;
           for (auto &m : msgs) {
-            if (m.message_type != UNKNOWN && m.message_type != INVALID_CC_MESSAGE) {
-              cstats[i].known++;
-              break;
-            }
+            if (m.nac == 0) continue; // timeout / malformed / TDMA early-return
+            if (filter_nac != 0 && m.nac != filter_nac) continue;
+            nac_ok = true;
+            if (m.message_type != UNKNOWN && m.message_type != INVALID_CC_MESSAGE)
+              type_ok = true;
           }
+          if (nac_ok)  cstats[i].decoded++;
+          if (type_ok) cstats[i].known++;
           got_msg = true;
         }
       }
@@ -231,14 +241,17 @@ int main(int argc, char **argv) {
     if (elapsed >= STATS_INTERVAL) {
       std::cerr << "[p25-data-monitor stats] " << elapsed << "s window:\n";
       for (size_t i = 0; i < chains.size(); i++) {
-        float raw_rate   = cstats[i].raw_msgs / elapsed;
-        float known_rate = cstats[i].known    / elapsed;
+        float raw_rate  = cstats[i].raw     / elapsed;
+        float dec_rate  = cstats[i].decoded / elapsed;
+        float known_rate= cstats[i].known   / elapsed;
         std::cerr << std::fixed << std::setprecision(4)
                   << "  " << (chains[i].freq / 1e6) << " MHz"
-                  << "  raw=" << std::setprecision(2) << raw_rate << "/s"
-                  << "  known=" << known_rate << "/s"
-                  << "  (" << cstats[i].raw_msgs << " msgs, "
-                  << cstats[i].known << " known-frames)\n";
+                  << "  raw="     << std::setprecision(2) << raw_rate   << "/s"
+                  << "  decoded=" << dec_rate  << "/s"
+                  << "  known="   << known_rate << "/s"
+                  << "  (" << cstats[i].raw << "r "
+                  << cstats[i].decoded << "d "
+                  << cstats[i].known   << "k)\n";
         cstats[i] = {};
       }
       stats_window_start = now;
