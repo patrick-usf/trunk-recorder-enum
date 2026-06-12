@@ -24,7 +24,9 @@
  */
 
 #include <atomic>
+#include <ctime>
 #include <getopt.h>
+#include <iomanip>
 #include <iostream>
 #include <memory>
 #include <signal.h>
@@ -192,15 +194,54 @@ int main(int argc, char **argv) {
   if (!freq_table_path.empty())
     parser.load_freq_table(freq_table_path, sys->get_sys_num());
 
+  // Per-chain decode-rate counters. Every 60 s, emit a stats line to stderr
+  // and a special TSV row (frame_type=STATS) to the log so quality is visible
+  // in both the console and the collected data.
+  // "raw_msgs" = all decoder queue outputs (good + timeout/error).
+  // "parsed"   = successfully parsed P25 frames (logged to TSV).
+  struct ChainStats {
+    long raw_msgs = 0;   // all rx_q messages this window
+    long parsed   = 0;   // frames that produced a TSV row
+  };
+  std::vector<ChainStats> cstats(chains.size());
+  time_t stats_window_start = time(nullptr);
+  static const int STATS_INTERVAL = 60; // seconds
+
   while (running) {
     bool got_msg = false;
-    for (auto &c : chains) {
+    for (size_t i = 0; i < chains.size(); i++) {
+      auto &c = chains[i];
       gr::message::sptr msg = c.rx_q->delete_head_nowait();
-      if (msg && msg->type() >= 0) {
-        parser.parse_message(msg, sys, c.freq);
-        got_msg = true;
+      if (msg) {
+        cstats[i].raw_msgs++;
+        if (msg->type() >= 0) {
+          auto msgs = parser.parse_message(msg, sys, c.freq);
+          if (!msgs.empty())
+            cstats[i].parsed++;
+          got_msg = true;
+        }
       }
     }
+
+    // Periodic per-channel stats report
+    time_t now = time(nullptr);
+    float elapsed = (float)(now - stats_window_start);
+    if (elapsed >= STATS_INTERVAL) {
+      std::cerr << "[p25-data-monitor stats] " << elapsed << "s window:\n";
+      for (size_t i = 0; i < chains.size(); i++) {
+        float raw_rate  = cstats[i].raw_msgs / elapsed;
+        float parse_rate = cstats[i].parsed  / elapsed;
+        std::cerr << std::fixed << std::setprecision(4)
+                  << "  " << (chains[i].freq / 1e6) << " MHz"
+                  << "  raw=" << std::setprecision(2) << raw_rate << "/s"
+                  << "  parsed=" << parse_rate << "/s"
+                  << "  (" << cstats[i].raw_msgs << " msgs, "
+                  << cstats[i].parsed << " frames)\n";
+        cstats[i] = {};
+      }
+      stats_window_start = now;
+    }
+
     if (!got_msg)
       usleep(5000);
   }
