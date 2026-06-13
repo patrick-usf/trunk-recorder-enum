@@ -437,6 +437,22 @@ std::vector<TrunkMessage> P25Parser::decode_tsbk(boost::dynamic_bitset<> &tsbk, 
       os << "uu_v_ch_req wuid=" << std::dec << sa << " dest=" << dest;
       message.meta = os.str();
       BOOST_LOG_TRIVIAL(debug) << "tsbk44 " << os.str();
+    } else if (opcode == 0x05) { // 0x45 UU_ANS_RSP — unit-to-unit answer response
+      unsigned long opts = bitset_shift_mask(tsbk, 72, 0xff);
+      unsigned long sa   = bitset_shift_mask(tsbk, 48, 0xffffff);
+      unsigned long da   = bitset_shift_mask(tsbk, 24, 0xffffff);
+      message.source    = sa;
+      message.talkgroup = da;
+      os << "uu_ans_rsp wuid=" << std::dec << sa << " dest=" << da
+         << " opts=0x" << std::hex << std::setfill('0') << std::setw(2) << opts;
+      message.meta = os.str();
+      BOOST_LOG_TRIVIAL(debug) << "tsbk45 " << os.str();
+    } else if (opcode == 0x14) { // 0x54 — ISP opcode 0x14 (identity uncertain; no captures)
+      unsigned long sa = bitset_shift_mask(tsbk, 48, 0xffffff);
+      message.source = sa;
+      os << "isp_0x14 wuid=" << std::dec << sa;
+      message.meta = os.str();
+      BOOST_LOG_TRIVIAL(debug) << "tsbk54 " << os.str();
     } else if (opcode == 0x15) { // 0x55 SNDCP_CH_REQ (true uplink; PI=0 echo handled below)
       unsigned long svcopt = bitset_shift_mask(tsbk, 72, 0xff);
       unsigned long sa     = bitset_shift_mask(tsbk, 16, 0xffffff);
@@ -471,6 +487,22 @@ std::vector<TrunkMessage> P25Parser::decode_tsbk(boost::dynamic_bitset<> &tsbk, 
       os << "u_reg_req wuid=" << std::dec << sa;
       message.meta = os.str();
       BOOST_LOG_TRIVIAL(debug) << "tsbk5a " << os.str();
+    } else if (opcode == 0x1b) { // 0x5B AUTH_RESP — authentication response from radio (TIA-102.AACA)
+      unsigned long sa       = bitset_shift_mask(tsbk, 48, 0xffffff);
+      unsigned long auth_res = bitset_shift_mask(tsbk, 16, 0xffffffff);
+      message.source = sa;
+      os << "auth_resp wuid=" << std::dec << sa
+         << " res=0x" << std::hex << std::setfill('0') << std::setw(8) << auth_res;
+      message.meta = os.str();
+      BOOST_LOG_TRIVIAL(debug) << "tsbk5b " << os.str();
+    } else if (opcode == 0x1c) { // 0x5C AUTH_FNE_RSP — radio auth response to FNE challenge (TIA-102.AACA)
+      unsigned long sa       = bitset_shift_mask(tsbk, 48, 0xffffff);
+      unsigned long auth_res = bitset_shift_mask(tsbk, 16, 0xffffffff);
+      message.source = sa;
+      os << "auth_fne_rsp wuid=" << std::dec << sa
+         << " res=0x" << std::hex << std::setfill('0') << std::setw(8) << auth_res;
+      message.meta = os.str();
+      BOOST_LOG_TRIVIAL(debug) << "tsbk5c " << os.str();
     } else {
       BOOST_LOG_TRIVIAL(debug) << "tsbk_isp_unknown: op=0x" << std::hex << message.opcode
                                << " mfid=0x" << message.mfid;
@@ -1082,13 +1114,14 @@ std::vector<TrunkMessage> P25Parser::decode_tsbk(boost::dynamic_bitset<> &tsbk, 
         toff = 0 - toff;
       }
       unsigned long f1 = bitset_shift_mask(tsbk, 16, 0xffffffff);
-      int slots_per_carrier[] = {1, 1, 1, 2, 4, 2};
-      bool chan_tdma;
-      if (slots_per_carrier[channel_type] > 1) {
-        chan_tdma = true;
-      } else {
-        chan_tdma = false;
-      }
+      // 16-entry table per TIA-102.AABC Table 10.82 and op25 trunking.py
+      int slots_per_carrier[] = {1, 1, 1, 2, 4, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2};
+      static const char *const chan_type_name[] = {
+          "reserved0", "reserved1", "P25_FDMA", "P25_TDMA_2",
+          "P25_TDMA_4", "P25_TDMA_2b", "tdma6", "tdma7",
+          "tdma8", "tdma9", "tdma10", "tdma11",
+          "tdma12", "tdma13", "tdma14", "tdma15"};
+      bool chan_tdma = (slots_per_carrier[channel_type] > 1);
       Freq_Table temp_table = {
           iden,              // id;
           toff * spac * 125, // offset;
@@ -1103,12 +1136,17 @@ std::vector<TrunkMessage> P25Parser::decode_tsbk(boost::dynamic_bitset<> &tsbk, 
       std::ostringstream m33;
       m33 << std::fixed << std::setprecision(5);
       m33 << "iden=" << iden
-          << " chan_type=" << channel_type
+          << " chan_type=" << chan_type_name[channel_type]
           << " slots=" << slots_per_carrier[channel_type]
           << " base_mhz=" << (temp_table.frequency / 1e6)
           << " step_khz=" << std::setprecision(3) << (temp_table.step / 1e3)
           << " txoff_mhz=" << std::showpos << (temp_table.offset / 1e6) << std::noshowpos;
       message.meta = m33.str();
+    } else {
+      std::ostringstream m33;
+      m33 << "iden_up_tdma mfrid=0x" << std::hex << std::setfill('0') << std::setw(2) << mfrid;
+      message.meta = m33.str();
+      BOOST_LOG_TRIVIAL(debug) << "tsbk33 " << m33.str();
     }
   } else if (opcode == 0x34) { // iden_up vhf uhf
     unsigned long iden = bitset_shift_mask(tsbk, 76, 0xf);
