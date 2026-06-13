@@ -43,6 +43,7 @@
 #include "gr_blocks/xlat_channelizer.h"
 #include "recorders/p25_recorder_decode.h"
 #include "recorders/p25_recorder_fsk4_demod.h"
+#include "recorders/p25_recorder_qpsk_demod.h"
 #include "recorders/recorder.h"
 #include "systems/p25_frame_logger.h"
 #include "systems/p25_parser.h"
@@ -75,7 +76,8 @@ static void print_usage(const char *prog) {
             << "  --log        <path>     Output TSV log file path\n"
             << " [--sys-name   <name>]    System short name for log (default: data-monitor)\n"
             << " [--freq-table <path>]    CSV freq table (TABLEID,TYPE,BASE,SPACING,OFFSET)\n"
-            << " [--nac        <hex>]     Expected NAC (e.g. 0x842); frames with other NACs excluded from decoded/known counts\n";
+            << " [--nac        <hex>]     Expected NAC (e.g. 0x842); frames with other NACs excluded from decoded/known counts\n"
+            << " [--qpsk]                 Use CQPSK demodulator instead of C4FM/FSK4 (for Motorola/QPSK systems)\n";
 }
 
 // Per-channel state held for the lifetime of the flowgraph.
@@ -97,6 +99,7 @@ int main(int argc, char **argv) {
   std::string         sys_name = "data-monitor";
   std::string         freq_table_path;
   unsigned long       filter_nac = 0; // 0 = accept any non-zero NAC
+  bool                use_qpsk   = false;
 
   static const struct option long_opts[] = {
     { "zmq",        required_argument, 0, 'z' },
@@ -107,11 +110,12 @@ int main(int argc, char **argv) {
     { "sys-name",   required_argument, 0, 'n' },
     { "freq-table", required_argument, 0, 't' },
     { "nac",        required_argument, 0, 'a' },
+    { "qpsk",       no_argument,       0, 'q' },
     { 0, 0, 0, 0 }
   };
 
   int opt, idx;
-  while ((opt = getopt_long(argc, argv, "z:c:r:f:l:n:t:a:", long_opts, &idx)) != -1) {
+  while ((opt = getopt_long(argc, argv, "z:c:r:f:l:n:t:a:q", long_opts, &idx)) != -1) {
     switch (opt) {
       case 'z': zmq_addr        = optarg;                      break;
       case 'c': sdr_center      = std::stod(optarg);           break;
@@ -121,6 +125,7 @@ int main(int argc, char **argv) {
       case 'n': sys_name        = optarg;                      break;
       case 't': freq_table_path = optarg;                      break;
       case 'a': filter_nac      = std::stoul(optarg, nullptr, 0); break;
+      case 'q': use_qpsk        = true;                        break;
       default:
         print_usage(argv[0]);
         return 1;
@@ -167,17 +172,22 @@ int main(int argc, char **argv) {
         false);
     xlat->tune_offset(sdr_center - freq);
 
-    auto fsk4 = make_p25_recorder_fsk4_demod();
-
     ChanChain c;
     c.freq = freq;
     c.rec  = std::make_unique<DataMonitorRecorder>();
     auto decode = make_p25_recorder_decode(c.rec.get(), 0, false);
     c.rx_q = decode->get_rx_queue();
 
-    tb->connect(zmq_src, 0, xlat,   0);
-    tb->connect(xlat,    0, fsk4,   0);
-    tb->connect(fsk4,    0, decode, 0);
+    tb->connect(zmq_src, 0, xlat, 0);
+    if (use_qpsk) {
+      auto qpsk = make_p25_recorder_qpsk_demod();
+      tb->connect(xlat,  0, qpsk,   0);
+      tb->connect(qpsk,  0, decode, 0);
+    } else {
+      auto fsk4 = make_p25_recorder_fsk4_demod();
+      tb->connect(xlat,  0, fsk4,   0);
+      tb->connect(fsk4,  0, decode, 0);
+    }
 
     chains.push_back(std::move(c));
   }
