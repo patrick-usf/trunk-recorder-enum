@@ -804,7 +804,13 @@ std::vector<TrunkMessage> P25Parser::decode_tsbk(boost::dynamic_bitset<> &tsbk, 
     message.source = sa;
     message.freq = fT;
 
-    BOOST_LOG_TRIVIAL(debug) << "tsbk14\tSNDCP Data Channel Grant\tsa " << sa << "\tChannels: " << chT << "/" << chR << " Freqs: " << format_freq(fT) << "/" << format_freq(fR) << " NSAPI: " << nsapi;
+    os << "sndcp_grant wuid=" << std::dec << sa
+       << " chT=" << channel_to_string(chT, sys_num) << "(" << channel_id_to_freq_string(chT, sys_num) << ")"
+       << " chR=" << channel_to_string(chR, sys_num) << "(" << channel_id_to_freq_string(chR, sys_num) << ")"
+       << " nsapi=" << nsapi
+       << " enc=" << encrypted << " dup=" << duplex;
+    message.meta = os.str();
+    BOOST_LOG_TRIVIAL(debug) << "tsbk14 " << os.str();
   } else if (opcode == 0x15) { // SNDCP_CH_REQ — ISP: radio requests a data session
     unsigned long svcopt = bitset_shift_mask(tsbk, 72, 0xff);
     unsigned long sa     = bitset_shift_mask(tsbk, 16, 0xffffff);
@@ -835,9 +841,13 @@ std::vector<TrunkMessage> P25Parser::decode_tsbk(boost::dynamic_bitset<> &tsbk, 
       }
       message.meta = os.str();
       BOOST_LOG_TRIVIAL(debug) << "tsbk16 " << os.str();
+    } else if (message.mfid == 0x90) {
+      // Motorola SNDCP channel announce variant — field layout not yet decoded.
+      os << "mot_sndcp_announce";
+      message.meta = os.str();
+      // message_type stays UNKNOWN; raw_frame filled by universal auto-fill below.
+      BOOST_LOG_TRIVIAL(debug) << "tsbk16 mfid=0x90 " << os.str();
     }
-    // mfid != 0x00: leave message_type=UNKNOWN and raw_frame empty;
-    // the auto-fill below captures raw bytes under the correct opcode name.
   } else if (opcode == 0x18) {
     BOOST_LOG_TRIVIAL(debug) << "tsbk18: Status Update";
   } else if (opcode == 0x1a) {
@@ -849,34 +859,54 @@ std::vector<TrunkMessage> P25Parser::decode_tsbk(boost::dynamic_bitset<> &tsbk, 
   } else if (opcode == 0x1f) {
     BOOST_LOG_TRIVIAL(debug) << "tsbk1f: Call Alert";
   } else if (opcode == 0x20) { // Acknowledge response
-    // unsigned long mfrid  = bitset_shift_mask(tsbk,80,0xff);
-    unsigned long ga = bitset_shift_mask(tsbk, 40, 0xffff);
-    unsigned long op = bitset_shift_mask(tsbk, 48, 0xff);
-    unsigned long sa = bitset_shift_mask(tsbk, 16, 0xffffff);
+    unsigned long ai_flag  = bitset_shift_mask(tsbk, 55, 0x1);
+    unsigned long svc_type = bitset_shift_mask(tsbk, 48, 0x3f);
+    unsigned long ga       = bitset_shift_mask(tsbk, 40, 0xffff);
+    unsigned long sa       = bitset_shift_mask(tsbk, 16, 0xffffff);
 
     message.message_type = ACKNOWLEDGE;
     message.talkgroup = ga;
     message.source = sa;
 
-    BOOST_LOG_TRIVIAL(debug) << "tsbk20\tAcknowledge Response\tga " << std::dec << ga << "\tsa " << sa << "\tReserved: " << op;
+    os << "ack_rsp wuid=" << std::dec << sa
+       << " ga=" << ga
+       << " svc=0x" << std::hex << std::setfill('0') << std::setw(2) << svc_type
+       << " ai=" << ai_flag;
+    message.meta = os.str();
+    BOOST_LOG_TRIVIAL(debug) << "tsbk20 " << os.str();
   } else if (opcode == 0x21) {
     BOOST_LOG_TRIVIAL(debug) << "tsbk21: Extended Function Command";
   } else if (opcode == 0x24) {
     BOOST_LOG_TRIVIAL(debug) << "tsbk24: Extended Function Command";
-  } else if (opcode == 0x27) {
-    BOOST_LOG_TRIVIAL(debug) << "tsbk27: Deny Response";
+  } else if (opcode == 0x27) { // Deny Response
+    unsigned long reason   = bitset_shift_mask(tsbk, 72, 0xff);
+    unsigned long svc_type = bitset_shift_mask(tsbk, 64, 0x3f);
+    unsigned long ta       = bitset_shift_mask(tsbk, 16, 0xffffff);
+
+    message.source = ta;
+
+    os << "deny_rsp wuid=" << std::dec << ta
+       << " reason=0x" << std::hex << std::setfill('0') << std::setw(2) << reason
+       << " svc=0x" << std::setw(2) << svc_type;
+    message.meta = os.str();
+    BOOST_LOG_TRIVIAL(debug) << "tsbk27 " << os.str();
   } else if (opcode == 0x28) { // Unit Group Affiliation Response
-    // unsigned long mfrid  = bitset_shift_mask(tsbk,80,0xff);
-    // unsigned long opts  = bitset_shift_mask(tsbk,72,0xff);
-    unsigned long ta = bitset_shift_mask(tsbk, 16, 0xffffff);
-    unsigned long ga = bitset_shift_mask(tsbk, 40, 0xffff);
+    unsigned long lg  = bitset_shift_mask(tsbk, 79, 0x1);
+    unsigned long gav = bitset_shift_mask(tsbk, 72, 0x3);
     unsigned long aga = bitset_shift_mask(tsbk, 56, 0xffff);
+    unsigned long ga  = bitset_shift_mask(tsbk, 40, 0xffff);
+    unsigned long ta  = bitset_shift_mask(tsbk, 16, 0xffffff);
 
     message.message_type = AFFILIATION;
     message.source = ta;
     message.talkgroup = ga;
 
-    BOOST_LOG_TRIVIAL(debug) << "tsbk2f\tUnit Group Affiliation\tSource ID: " << std::setw(7) << ta << "\tGroup Address: " << std::dec << ga << "\tAnouncement Goup: " << aga;
+    os << "grp_aff_rsp wuid=" << std::dec << ta
+       << " ga=" << ga << " aga=" << aga
+       << " gav=" << gav
+       << " lg=" << lg;
+    message.meta = os.str();
+    BOOST_LOG_TRIVIAL(debug) << "tsbk28 " << os.str();
   } else if (opcode == 0x29) { // Secondary Control Channel Broadcast - Explicit
     unsigned long rfid = bitset_shift_mask(tsbk, 72, 0xff);
     unsigned long stid = bitset_shift_mask(tsbk, 64, 0xff);
@@ -902,7 +932,15 @@ std::vector<TrunkMessage> P25Parser::decode_tsbk(boost::dynamic_bitset<> &tsbk, 
     BOOST_LOG_TRIVIAL(debug) << os.str();
 
   } else if (opcode == 0x2a) { // Group Affiliation Query
-    BOOST_LOG_TRIVIAL(debug) << "tsbk2a Group Affiliation Query";
+    unsigned long ga = bitset_shift_mask(tsbk, 40, 0xffff);
+    unsigned long ta = bitset_shift_mask(tsbk, 16, 0xffffff);
+
+    message.source = ta;
+    message.talkgroup = ga;
+
+    os << "grp_aff_q wuid=" << std::dec << ta << " ga=" << ga;
+    message.meta = os.str();
+    BOOST_LOG_TRIVIAL(debug) << "tsbk2a " << os.str();
   } else if (opcode == 0x2b) { // Location Registration Response
     // unsigned long mfrid  = bitset_shift_mask(tsbk,80,0xff);
     unsigned long ga = bitset_shift_mask(tsbk, 56, 0xffff);
@@ -913,30 +951,43 @@ std::vector<TrunkMessage> P25Parser::decode_tsbk(boost::dynamic_bitset<> &tsbk, 
     message.talkgroup = ga;
     message.source = sa;
 
-    BOOST_LOG_TRIVIAL(debug) << "tsbk2b\tLocation Registration Response\tga " << std::dec << ga << "\tsa " << sa << "\tValue: " << rv;
+    os << "loc_reg_rsp wuid=" << std::dec << sa
+       << " ga=" << ga
+       << " rv=" << rv;
+    message.meta = os.str();
+    BOOST_LOG_TRIVIAL(debug) << "tsbk2b " << os.str();
   } else if (opcode == 0x2c) { // Unit Registration Response
-    // unsigned long mfrid  = bitset_shift_mask(tsbk,80,0xff);
-    // unsigned long opts  = bitset_shift_mask(tsbk,72,0xff);
-    unsigned long sa = bitset_shift_mask(tsbk, 16, 0xffffff);
-    unsigned long si = bitset_shift_mask(tsbk, 40, 0xffffff);
+    unsigned long rv   = bitset_shift_mask(tsbk, 76, 0x3);
+    unsigned long syid = bitset_shift_mask(tsbk, 64, 0xfff);
+    unsigned long sid  = bitset_shift_mask(tsbk, 40, 0xffffff);
+    unsigned long sa   = bitset_shift_mask(tsbk, 16, 0xffffff);
 
     message.message_type = REGISTRATION;
-    message.source = si;
+    message.source = sa;
 
-    BOOST_LOG_TRIVIAL(debug) << "tsbk2c\tUnit Registration COMMAND\tsa " << std::setw(7) << sa << " Source ID: " << si;
+    os << "u_reg_rsp wuid=" << std::dec << sa
+       << " rv=" << rv
+       << " syid=0x" << std::hex << std::setfill('0') << std::setw(3) << syid
+       << " sid=" << std::dec << sid;
+    message.meta = os.str();
+    BOOST_LOG_TRIVIAL(debug) << "tsbk2c " << os.str();
   } else if (opcode == 0x2d) { //
     BOOST_LOG_TRIVIAL(debug) << "tsbk2d AUTHENTICATION COMMAND";
   } else if (opcode == 0x2e) { //
     BOOST_LOG_TRIVIAL(debug) << "tsbk2e DE-REGISTRATION ACKNOWLEDGE";
   } else if (opcode == 0x2f) { // Unit DeRegistration Ack
-    // unsigned long mfrid  = bitset_shift_mask(tsbk,80,0xff);
-    // unsigned long opts  = bitset_shift_mask(tsbk,72,0xff);
-    unsigned long si = bitset_shift_mask(tsbk, 16, 0xffffff);
+    unsigned long wacn = bitset_shift_mask(tsbk, 52, 0xfffff);
+    unsigned long syid = bitset_shift_mask(tsbk, 40, 0xfff);
+    unsigned long sid  = bitset_shift_mask(tsbk, 16, 0xffffff);
 
     message.message_type = DEREGISTRATION;
-    message.source = si;
+    message.source = sid;
 
-    BOOST_LOG_TRIVIAL(debug) << "tsbk2f\tUnit Deregistration ACK\tSource ID: " << std::setw(7) << si;
+    os << "u_dereg_ack wuid=" << std::dec << sid
+       << " wacn=0x" << std::hex << std::setfill('0') << std::setw(5) << wacn
+       << " syid=0x" << std::setw(3) << syid;
+    message.meta = os.str();
+    BOOST_LOG_TRIVIAL(debug) << "tsbk2f " << os.str();
   } else if (opcode == 0x30) {
     unsigned long mfrid = bitset_shift_mask(tsbk, 80, 0xff);
     if (mfrid == 0xA4) { // GRG_EXENC_CMD (M/A-COM patch)
@@ -1189,9 +1240,10 @@ std::vector<TrunkMessage> P25Parser::decode_tsbk(boost::dynamic_bitset<> &tsbk, 
     messages.push_back(message);
     return messages;
   }
-  // Auto-fill raw_frame for any frame that reached this point with message_type
-  // still UNKNOWN — covers stub opcode branches that only have a debug log line.
-  if (message.message_type == UNKNOWN && message.raw_frame.empty()) {
+  // Populate raw_frame for every frame that didn't already set it — covers both
+  // stub branches (UNKNOWN) and fully-parsed frames (so raw bytes always appear
+  // in the TSV column regardless of decode status).
+  if (message.raw_frame.empty()) {
     std::ostringstream raw;
     raw << "op=0x" << std::hex << std::setfill('0') << std::setw(2) << opcode
         << " mfid=0x" << std::setw(2) << message.mfid << " bytes=";
