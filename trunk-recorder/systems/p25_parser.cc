@@ -292,15 +292,26 @@ std::vector<TrunkMessage> P25Parser::decode_mbt_data(unsigned long opcode, boost
       message.sys_id = syid;
       message.freq = f1;
     }
-    BOOST_LOG_TRIVIAL(debug) << "mbt3b net stat: wacn " << std::dec << wacn << " syid " << syid << " ch1 " << channel_to_string(ch1, sys_num) << "(" << channel_id_to_freq_string(ch1, sys_num) << ") ";
+    os << "net_sts wacn=0x" << std::hex << std::setfill('0') << std::setw(5) << wacn
+       << " syid=0x" << std::setw(3) << syid
+       << " ch1=" << channel_to_string(ch1, sys_num) << "(" << channel_id_to_freq_string(ch1, sys_num) << ")"
+       << " ch2=" << channel_to_string(ch2, sys_num) << "(" << channel_id_to_freq_string(ch2, sys_num) << ")";
+    message.meta = os.str();
+    BOOST_LOG_TRIVIAL(debug) << "mbt3b " << os.str();
   } else if (opcode == 0x3c) { // adjacent status
     unsigned long syid = bitset_shift_mask(header, 48, 0xfff);
     unsigned long rfid = bitset_shift_mask(header, 24, 0xff);
     unsigned long stid = bitset_shift_mask(header, 16, 0xff);
     unsigned long ch1 = bitset_shift_mask(mbt_data, 80, 0xffff);
     unsigned long ch2 = bitset_shift_mask(mbt_data, 64, 0xffff);
-    BOOST_LOG_TRIVIAL(debug) << "mbt3c adjacent status "
-                             << "syid " << syid << " rfid " << rfid << " stid " << stid << " ch1 " << ch1 << " ch2 " << ch2;
+    unsigned long f1  = channel_id_to_frequency(ch1, sys_num);
+    unsigned long f2  = channel_id_to_frequency(ch2, sys_num);
+    os << "adj_sts syid=0x" << std::hex << std::setfill('0') << std::setw(3) << syid
+       << " rfid=" << std::dec << rfid << " stid=" << stid
+       << " ch1=" << channel_to_string(ch1, sys_num) << "(" << channel_id_to_freq_string(ch1, sys_num) << ")"
+       << " ch2=" << channel_to_string(ch2, sys_num) << "(" << channel_id_to_freq_string(ch2, sys_num) << ")";
+    message.meta = os.str();
+    BOOST_LOG_TRIVIAL(debug) << "mbt3c " << os.str();
   } else if (opcode == 0x04) { //  Unit to Unit Voice Service Channel Grant -Extended (UU_V_CH_GRANT)
     // unsigned long mfrid = bitset_shift_mask(header, 80, 0xff);
     bool emergency = (bool)bitset_shift_mask(header, 24, 0x80);
@@ -342,13 +353,20 @@ std::vector<TrunkMessage> P25Parser::decode_mbt_data(unsigned long opcode, boost
     messages.push_back(message);
     return messages;
   }
-  // Auto-fill raw_frame for partially-decoded MBT frames that are still UNKNOWN
-  // (e.g. opcode 0x02 with non-Motorola mfrid, opcode 0x3c, opcode 0x3b when
-  // channel IDs don't resolve to frequencies).
-  if (message.message_type == UNKNOWN && message.raw_frame.empty()) {
+  // Populate raw_frame for every MBT frame that didn't already set it — same
+  // pattern as decode_tsbk: covers both stub branches and fully-parsed frames.
+  if (message.raw_frame.empty()) {
     std::ostringstream raw;
     raw << "op=0x" << std::hex << std::setfill('0') << std::setw(2) << opcode
-        << " mfid=0x" << std::setw(2) << message.mfid;
+        << " mfid=0x" << std::setw(2) << message.mfid << " hdr=";
+    boost::dynamic_bitset<> tmp = header >> 16;
+    int hdr_bytes = (int)(header.size() - 16) / 8;
+    for (int i = hdr_bytes - 1; i >= 0; i--) {
+      uint8_t b = 0;
+      for (int j = 7; j >= 0; j--)
+        b = (b << 1) | (unsigned int)tmp[i * 8 + j];
+      raw << std::setw(2) << (unsigned int)b;
+    }
     message.raw_frame = raw.str();
     if (message.meta.empty()) {
       std::ostringstream ms;
@@ -1177,26 +1195,30 @@ std::vector<TrunkMessage> P25Parser::decode_tsbk(boost::dynamic_bitset<> &tsbk, 
       message.sys_id = syid;
       message.freq = f1;
     }
-    BOOST_LOG_TRIVIAL(debug) << "tsbk3b net stat: wacn " << std::dec << wacn << " syid " << syid << " ch1 " << channel_to_string(ch1, sys_num) << "(" << channel_id_to_freq_string(ch1, sys_num) << ") ";
+    os << "net_sts wacn=0x" << std::hex << std::setfill('0') << std::setw(5) << wacn
+       << " syid=0x" << std::setw(3) << syid
+       << " ch1=" << channel_to_string(ch1, sys_num) << "(" << channel_id_to_freq_string(ch1, sys_num) << ")";
+    message.meta = os.str();
+    BOOST_LOG_TRIVIAL(debug) << "tsbk3b " << os.str();
   } else if (opcode == 0x3c) { // adjacent status
+    unsigned long syid = bitset_shift_mask(tsbk, 60, 0xfff);
     unsigned long rfid = bitset_shift_mask(tsbk, 48, 0xff);
     unsigned long stid = bitset_shift_mask(tsbk, 40, 0xff);
     unsigned long ch1 = bitset_shift_mask(tsbk, 24, 0xffff);
     unsigned long f1 = channel_id_to_frequency(ch1, sys_num);
-    BOOST_LOG_TRIVIAL(debug) << "tsbk3c\tAdjacent Status\t rfid " << std::dec << rfid << " stid " << stid << " ch1 " << channel_to_string(ch1, sys_num) << "(" << channel_id_to_freq_string(ch1, sys_num) << ") ";
 
     if (f1) {
       it = freq_tables[stid].find((ch1 >> 12) & 0xf);
-
       if (it != freq_tables[stid].end()) {
         Freq_Table temp_table = it->second;
-
-        //			self.adjacent[f1] = 'rfid: %d stid:%d uplink:%f
-        // tbl:%d' % (rfid, stid, (f1 + self.freq_table[table]['offset']) /
-        // 1000000.0, table)
         BOOST_LOG_TRIVIAL(debug) << "\ttsbk3c Chan " << temp_table.frequency << "  " << temp_table.step;
       }
     }
+    os << "adj_sts syid=0x" << std::hex << std::setfill('0') << std::setw(3) << syid
+       << " rfid=" << std::dec << rfid << " stid=" << stid
+       << " ch1=" << channel_to_string(ch1, sys_num) << "(" << channel_id_to_freq_string(ch1, sys_num) << ")";
+    message.meta = os.str();
+    BOOST_LOG_TRIVIAL(debug) << "tsbk3c " << os.str();
   } else if (opcode == 0x3d) { // iden_up
     unsigned long iden = bitset_shift_mask(tsbk, 76, 0xf);
     unsigned long bw = bitset_shift_mask(tsbk, 67, 0x1ff);
