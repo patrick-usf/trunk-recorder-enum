@@ -824,9 +824,10 @@ std::vector<TrunkMessage> P25Parser::decode_tsbk(boost::dynamic_bitset<> &tsbk, 
     BOOST_LOG_TRIVIAL(debug) << "tsbk15 " << os.str();
   } else if (opcode == 0x16) { // SNDCP_CH_ANNOUNCE_EXP (mfid=0x00) or MOT_UNKNOWN_16 (mfid=0x90)
     if (message.mfid == 0x00) {
-      // bits[79:64] = chan_A (IDEN[3:0] + CHAN[11:0]), bits[63:48] = chan_B (same encoding, 0xffff = none)
-      unsigned long chan_a = bitset_shift_mask(tsbk, 64, 0xffff);
-      unsigned long chan_b = bitset_shift_mask(tsbk, 48, 0xffff);
+      // bits[63:48] = chan_A (IDEN[3:0] + CHAN[11:0]), bits[47:32] = chan_B (same encoding, 0xffff = none)
+      // bits[79:64] are options/reserved per TIA-102.AABC Table 10.16
+      unsigned long chan_a = bitset_shift_mask(tsbk, 48, 0xffff);
+      unsigned long chan_b = bitset_shift_mask(tsbk, 32, 0xffff);
       unsigned long fa     = channel_id_to_frequency(chan_a, sys_num);
       unsigned long fb     = channel_id_to_frequency(chan_b, sys_num);
 
