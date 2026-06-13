@@ -176,7 +176,7 @@ std::string P25FrameLogger::opcode_name(unsigned long opcode, unsigned long mfid
       case 0x05: return "LCW_UU_ANS_REQ";             // Unit to Unit Answer Request
       case 0x08: return "LCW_TEL_INT_V_CH_USER";      // Telephone Interconnect Voice Channel User
       case 0x09: return "LCW_TEL_INT_ANS_REQ";        // Telephone Interconnect Answer Request
-      case 0x0f: return "LCW_ENC_PROD_CTRL";          // Encryption Product Control
+      case 0x0f: return "LCW_CALL_TERM_CANCEL";        // Call Termination / Cancellation
       case 0x10: return "LCW_ENC_CTRL";               // Encryption Control (Algorithm ID + Key ID)
       case 0x15: return "LCW_CALL_TERM";              // Call Termination / Cancellation
       case 0x16: return "LCW_SNDCP_CH_ANNOUNCE_EXP"; // SNDCP Data Channel Announcement

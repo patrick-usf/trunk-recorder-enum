@@ -1513,6 +1513,9 @@ std::vector<TrunkMessage> P25Parser::parse_message(gr::message::sptr msg, System
         raw << std::hex << std::setfill('0') << std::setw(2) << (unsigned int)(uint8_t)s[i];
       message.raw_frame = raw.str();
       message.meta = message.raw_frame;
+    } else {
+      // op25 sends type-15 as a 2-byte NAC-only notification; LC word arrives separately as type-19 LCW
+      message.meta = "tdulc_event";
     }
     messages.push_back(message);
     log_with_freq(messages, system, 15, fallback_freq);
@@ -1606,6 +1609,23 @@ std::vector<TrunkMessage> P25Parser::parse_message(gr::message::sptr msg, System
                 << " chB_freq=" << freq_b
                 << " tgB="      << tg_b;
             }
+            message.meta = m.str();
+          } else if (lco == 0x09) { // Source ID Extension — per op25 trunking.py pb_sf_lco==0x49
+            uint32_t n24 = ((uint8_t)s[2] << 16) | ((uint8_t)s[3] << 8) | (uint8_t)s[4];
+            unsigned long netid = (n24 >> 4) & 0x0fffff;
+            unsigned long syid  = (((uint8_t)s[4] & 0x0f) << 8) | (uint8_t)s[5];
+            unsigned long sid   = ((uint8_t)s[6] << 16) | ((uint8_t)s[7] << 8) | (uint8_t)s[8];
+            message.source = sid;
+            std::ostringstream m;
+            m << "src_id_ext wuid=" << std::dec << sid
+              << " netid=0x" << std::hex << std::setfill('0') << std::setw(5) << netid
+              << " syid=0x" << std::setw(3) << syid;
+            message.meta = m.str();
+          } else if (lco == 0x0f) { // Call Termination / Cancellation — per op25 trunking.py pb_sf_lco==0x4f
+            unsigned long sa = ((uint8_t)s[6] << 16) | ((uint8_t)s[7] << 8) | (uint8_t)s[8];
+            message.source = sa;
+            std::ostringstream m;
+            m << "call_term_cancel wuid=" << std::dec << sa;
             message.meta = m.str();
           } else if (lco == 0x23) { // RFSS Status Broadcast (abbreviated)
             // s[1]      = LMC (Link Modification Control)
