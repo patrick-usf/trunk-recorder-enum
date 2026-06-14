@@ -184,6 +184,64 @@ namespace gr {
             return 0;
         }
 
+        /* P25 3/4 rate trellis decoder for PDU data blocks.
+         * 49 steps, 8 states (next_state = decoded tribit), outputs 18 bytes (144 bits).
+         * next_words_34 derived from DMR ENCODE_TABLE via inverse CMAP — same underlying code. */
+        static int block_deinterleave_34(bit_vector& bv, unsigned int start, uint8_t* buf) {
+            static const uint16_t deinterleave_tb[] = {
+                0,  1,  2,  3,  52, 53, 54, 55, 100,101,102,103, 148,149,150,151,
+                4,  5,  6,  7,  56, 57, 58, 59, 104,105,106,107, 152,153,154,155,
+                8,  9, 10, 11,  60, 61, 62, 63, 108,109,110,111, 156,157,158,159,
+                12, 13, 14, 15,  64, 65, 66, 67, 112,113,114,115, 160,161,162,163,
+                16, 17, 18, 19,  68, 69, 70, 71, 116,117,118,119, 164,165,166,167,
+                20, 21, 22, 23,  72, 73, 74, 75, 120,121,122,123, 168,169,170,171,
+                24, 25, 26, 27,  76, 77, 78, 79, 124,125,126,127, 172,173,174,175,
+                28, 29, 30, 31,  80, 81, 82, 83, 128,129,130,131, 176,177,178,179,
+                32, 33, 34, 35,  84, 85, 86, 87, 132,133,134,135, 180,181,182,183,
+                36, 37, 38, 39,  88, 89, 90, 91, 136,137,138,139, 184,185,186,187,
+                40, 41, 42, 43,  92, 93, 94, 95, 140,141,142,143, 188,189,190,191,
+                44, 45, 46, 47,  96, 97, 98, 99, 144,145,146,147, 192,193,194,195,
+                48, 49, 50, 51 };
+
+            static const uint8_t next_words_34[8][8] = {
+                {0x2, 0xD, 0xE, 0x1, 0x7, 0x8, 0xB, 0x4},
+                {0xE, 0x1, 0x7, 0x8, 0xB, 0x4, 0x2, 0xD},
+                {0xA, 0x5, 0x6, 0x9, 0xF, 0x0, 0x3, 0xC},
+                {0x6, 0x9, 0xF, 0x0, 0x3, 0xC, 0xA, 0x5},
+                {0xF, 0x0, 0x3, 0xC, 0xA, 0x5, 0x6, 0x9},
+                {0x3, 0xC, 0xA, 0x5, 0x6, 0x9, 0xF, 0x0},
+                {0x7, 0x8, 0xB, 0x4, 0x2, 0xD, 0xE, 0x1},
+                {0xB, 0x4, 0x2, 0xD, 0xE, 0x1, 0x7, 0x8},
+            };
+
+            uint8_t hd[8];
+            int state = 0;
+            uint8_t tribits[49];
+
+            for (int step = 0; step < 49; step++) {
+                int b = step * 4;
+                uint8_t codeword = (bv[start + deinterleave_tb[b+0]] << 3) |
+                                   (bv[start + deinterleave_tb[b+1]] << 2) |
+                                   (bv[start + deinterleave_tb[b+2]] << 1) |
+                                    bv[start + deinterleave_tb[b+3]];
+                for (int j = 0; j < 8; j++)
+                    hd[j] = count_bits(codeword ^ next_words_34[state][j]);
+                state = find_min(hd, 8);
+                if (state == -1) return -1;
+                tribits[step] = (uint8_t)state;
+            }
+
+            // Convert tribits[0..47] to 18 bytes (144 bits), MSB-first; skip flush tribit[48]
+            memset(buf, 0, 18);
+            for (int i = 0; i < 48; i++) {
+                int bit_pos = i * 3;
+                buf[ bit_pos      >> 3] |= ((tribits[i] >> 2) & 1) << (7 - ( bit_pos      & 7));
+                buf[(bit_pos + 1) >> 3] |= ((tribits[i] >> 1) & 1) << (7 - ((bit_pos + 1) & 7));
+                buf[(bit_pos + 2) >> 3] |=  (tribits[i]       & 1) << (7 - ((bit_pos + 2) & 7));
+            }
+            return 0;
+        }
+
         void p25p1_fdma::set_debug(int debug)
         {
             d_debug = debug;
@@ -601,8 +659,10 @@ namespace gr {
         void p25p1_fdma::process_PDU(const bit_vector& fr, uint32_t fr_len) {
             uint8_t fmt, sap, blks, op = 0;
             block_vector deinterleave_buf;
-            if ((process_blocks(fr, fr_len, deinterleave_buf) == 0) &&
-                    (deinterleave_buf.size() > 0)) {			// extract all blocks associated with this PDU
+            process_blocks(fr, fr_len, deinterleave_buf);
+            // Accept partial decode: even if later blocks fail, the header block
+            // (deinterleave_buf[0]) is what we need for non-MBT SNDCP PDUs.
+            if (deinterleave_buf.size() > 0) {
                 if (crc16(deinterleave_buf[0].data(), 12) != 0) // validate PDU header
                     return;
 
@@ -651,10 +711,39 @@ namespace gr {
                                 logts.get(d_msgq_id), framer->nac, fmt, op, s0, s1, s2, s3);
                     }
                 } else {
-                    if (d_debug >= 10)
-                        fprintf(stderr, "%s NAC 0x%03x PDU:  non-MBT SAP=%02x fmt=%02x forwarded for logging\n",
-                                logts.get(d_msgq_id), framer->nac, sap, fmt);
-                    process_duid(M_P25_RAW_PDU, framer->nac, deinterleave_buf[0].data(), 12);
+                    // Decode data blocks (1..blks) with 3/4 rate trellis (18 bytes each).
+                    // Rebuild the status-stripped bit vector from the raw frame for this pass.
+                    bit_vector bv34;
+                    bv34.reserve(fr_len >> 1);
+                    for (unsigned int d = 0; d < fr_len >> 1; d++) {
+                        if (d < 57) {
+                            if ((d+1) % 36 == 0) continue;
+                        } else {
+                            unsigned int block_off = (d - 57) % 101;
+                            if (block_off == 14 || block_off == 50 || block_off == 86) continue;
+                        }
+                        bv34.push_back(fr[d*2]);
+                        bv34.push_back(fr[d*2+1]);
+                    }
+                    std::vector<std::vector<uint8_t>> data_blks;
+                    for (uint8_t bi = 1; bi <= blks; bi++) {
+                        unsigned int start = 48 + 64 + bi * 196;
+                        if (start + 196 > bv34.size()) break;
+                        std::vector<uint8_t> blk(18, 0);
+                        if (block_deinterleave_34(bv34, start, blk.data()) == 0)
+                            data_blks.push_back(std::move(blk));
+                        else
+                            break;
+                    }
+                    fprintf(stderr, "[PDU_BLK] nac=0x%03x fmt=%02x blks=%u data_decoded=%zu\n",
+                            framer->nac, fmt, blks, data_blks.size());
+                    // Serialize: 12-byte header + 18-byte data blocks
+                    std::vector<uint8_t> payload;
+                    payload.insert(payload.end(),
+                                   deinterleave_buf[0].begin(), deinterleave_buf[0].end());
+                    for (const auto& blk : data_blks)
+                        payload.insert(payload.end(), blk.begin(), blk.end());
+                    process_duid(M_P25_RAW_PDU, framer->nac, payload.data(), payload.size());
                 }
 
             }
@@ -664,8 +753,15 @@ namespace gr {
             bit_vector bv;
             bv.reserve(fr_len >> 1);
             for (unsigned int d=0; d < fr_len >> 1; d++) {	  // eliminate status bits from frame
-                if ((d+1) % 36 == 0)
-                    continue;
+                // Body starts at d=57 (after 24 sync + 33 NID dibits).
+                // Each 101-dibit PDU block has status at block-relative positions 14, 50, 86.
+                // Global period-36 removal drifts -7 dibits/block, corrupting blocks 1+.
+                if (d < 57) {
+                    if ((d+1) % 36 == 0) continue;   // NID-area status
+                } else {
+                    unsigned int block_off = (d - 57) % 101;
+                    if (block_off == 14 || block_off == 50 || block_off == 86) continue;
+                }
                 bv.push_back(fr[d*2]);
                 bv.push_back(fr[d*2+1]);
             }

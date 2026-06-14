@@ -1687,20 +1687,46 @@ std::vector<TrunkMessage> P25Parser::parse_message(gr::message::sptr msg, System
     messages.push_back(message);
     log_with_freq(messages, system, 18, fallback_freq);
     return messages;
-  } else if (type == 20) { // non-MBT PDU header forwarded for logging
-    message.nac = nac;
+  } else if (type == 20) { // P25 PDU header (DUID 0x0C — packet data)
+    message.nac       = nac;
+    message.direction = DIR_OSP;
+    message.duid      = 0x0c;
+    message.mfid      = 0;
     if (s.length() >= 3) {
-      message.mfid      = 0;
-      message.opcode    = (uint8_t)s[0] & 0x1f; // fmt field
-      message.direction = DIR_OSP;
-      message.duid      = 0x0c; // PDU/MBC
+      uint8_t  fmt  = (uint8_t)s[0] & 0x1f;
+      uint8_t  sap  = (uint8_t)s[1] & 0x3f;
+      message.opcode = fmt;
+
+      // SAP identifier names (TIA-102.BAAA Table 9.9)
+      static const char *sap_names[] = {
+        "user_data","rsvd01","rsvd02","rsvd03","rsvd04","rsvd05","rsvd06","rsvd07",
+        "sndcp_d",  "sndcp", "sndcp_a","sndcp_b","sndcp_c","sndcp_e","sndcp_f","sndcp_g",
+      };
+      const char *sap_name = (sap < 16) ? sap_names[sap] : "rsvd";
+
+      std::ostringstream meta;
+      meta << "pdu fmt=0x" << std::hex << std::setfill('0') << std::setw(2) << (unsigned)fmt
+           << " sap=" << sap_name << "(0x" << std::setw(2) << (unsigned)sap << ")";
+
+      if (s.length() >= 6) {
+        uint32_t dst = ((uint8_t)s[3] << 16) | ((uint8_t)s[4] << 8) | (uint8_t)s[5];
+        message.source = dst;
+        meta << " dst=" << std::dec << dst;
+      }
+      if (s.length() >= 7) {
+        uint8_t a_bit = ((uint8_t)s[6] >> 7) & 1;
+        uint8_t blks  = (uint8_t)s[6] & 0x7f;
+        meta << " blks=" << (unsigned)blks;
+        if (a_bit) meta << " last";
+      }
+
+      // full raw bytes preserved for offline analysis
       std::ostringstream raw;
-      raw << "raw_pdu sap=0x" << std::hex << std::setfill('0') << std::setw(2) << ((uint8_t)s[1] & 0x3f)
-          << " fmt=0x" << std::setw(2) << message.opcode << " bytes=";
+      raw << meta.str() << " bytes=";
       for (size_t i = 0; i < s.length(); i++)
-        raw << std::setw(2) << (unsigned int)(uint8_t)s[i];
+        raw << std::hex << std::setfill('0') << std::setw(2) << (unsigned int)(uint8_t)s[i];
       message.raw_frame = raw.str();
-      message.meta      = message.raw_frame;
+      message.meta      = meta.str();
     }
     message.message_type = UNKNOWN;
     messages.push_back(message);
