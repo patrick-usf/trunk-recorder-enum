@@ -44,6 +44,25 @@ namespace gr {
 
         static const int SND_FRAME = 160;   // pcm samples per frame
 
+        // FEC error statistics for one code segment within a decoded frame.
+        // 'type'      : short label (HMG, RS8, RS12, RS16, GLY, TRL)
+        // 'detected'  : errors detected by the decoder (-1 = exceeded capacity, count unknown)
+        // 'corrected' : errors successfully corrected
+        // 'remaining' : 0 = output is trusted; 1 = output is untrusted (uncorrectable errors)
+        struct fec_seg {
+            const char *type;
+            int detected;
+            int corrected;
+            int remaining;   // 0 = clean, 1 = untrusted
+        };
+
+        static inline std::string fec_seg_str(const fec_seg &s) {
+            char buf[64];
+            snprintf(buf, sizeof(buf), "%s(d=%d,c=%d,r=%d)",
+                     s.type, s.detected, s.corrected, s.remaining);
+            return std::string(buf);
+        }
+
         class p25p1_fdma
         {
             private:
@@ -53,10 +72,10 @@ namespace gr {
 
                 // internal functions
                 bool header_codeword(uint64_t acc, uint32_t& nac, uint32_t& duid);
-                void process_duid(uint32_t const duid, uint32_t const nac, const uint8_t* buf, const int len);
+                void process_duid(uint32_t const duid, uint32_t const nac, const uint8_t* buf, const int len, const std::string& fec = "");
                 void process_HDU(const bit_vector& A);
-                void process_LCW(std::vector<uint8_t>& HB);
-                void process_LLDU(const bit_vector& A, std::vector<uint8_t>& HB);
+                void process_LCW(std::vector<uint8_t>& HB, const fec_seg& hmg_in);
+                void process_LLDU(const bit_vector& A, std::vector<uint8_t>& HB, fec_seg& hmg_out);
                 void process_LDU1(const bit_vector& A);
                 void process_LDU2(const bit_vector& A);
                 void process_TTDU();

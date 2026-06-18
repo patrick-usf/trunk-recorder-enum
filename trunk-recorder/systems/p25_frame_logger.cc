@@ -114,7 +114,7 @@ void P25FrameLogger::write_header() {
       "timestamp\tsys_name\tnac\tduid\tdirection\tframe_type\tmfid\topcode_hex\t"
       "opcode_name\tdecode_status\ttalkgroup\tsource_id\tfreq_mhz\t"
       "emergency\tencrypted\tphase2_tdma\ttdma_slot\twacn\tsys_id\t"
-      "rfss_id\tsite_id\traw_frame\tmeta\n";
+      "rfss_id\tsite_id\traw_frame\tmeta\tfec\n";
   log_file_ << hdr;
   bytes_written_ += std::string(hdr).size();
 }
@@ -376,6 +376,7 @@ std::string P25FrameLogger::format_record(const TrunkMessage &msg,
       << msg.sys_rfss               << '\t'
       << msg.sys_site_id            << '\t'
       << msg.raw_frame              << '\t'
-      << msg.meta;
+      << msg.meta                   << '\t'
+      << msg.fec;
   return rec.str();
 }

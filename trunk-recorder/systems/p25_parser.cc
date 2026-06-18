@@ -1526,7 +1526,8 @@ std::vector<TrunkMessage> P25Parser::parse_message(gr::message::sptr msg, System
     // LCW (Link Control Word) from LDU1 or TDULC: length==10 after NAC strip
     //   lcw[0..8](9) + source_duid(1)
     message.nac = nac;
-    if (s.length() >= 12) { // ESS from LDU2 (DUID 0x0a)
+    if (s.length() >= 12 && (s.length() == 12 || (uint8_t)s[12] == 0xFE)) { // ESS from LDU2 (DUID 0x0a)
+      if (s.length() > 12) message.fec = s.substr(13); // fec at s[13..] when s[12]==0xFE
       uint8_t  algid = (uint8_t)s[9];
       uint16_t keyid = ((uint8_t)s[10] << 8) | (uint8_t)s[11];
       message.duid      = 0x0a;
@@ -1560,6 +1561,7 @@ std::vector<TrunkMessage> P25Parser::parse_message(gr::message::sptr msg, System
       message.raw_frame = raw.str();
       message.meta      = message.raw_frame;
     } else if (s.length() >= 9) { // LCW from LDU1 or TDULC
+      if (s.length() > 10 && (uint8_t)s[10] == 0xFE) message.fec = s.substr(11);
       uint8_t source_duid = (s.length() >= 10) ? (uint8_t)s[9] : 0x05;
       uint8_t lco = (uint8_t)s[0] & 0x3f;  // Link Control Opcode
       uint8_t pb  = ((uint8_t)s[0] >> 7) & 1; // protected bit
@@ -1720,10 +1722,26 @@ std::vector<TrunkMessage> P25Parser::parse_message(gr::message::sptr msg, System
         if (a_bit) meta << " last";
       }
 
-      // full raw bytes preserved for offline analysis
+      // Scan backward for 0xAB 0xCD fec section marker; exclude from hex dump when found.
+      size_t fec_start = std::string::npos;
+      if (s.length() >= 14) {
+        for (size_t i = s.length() - 2; i >= 12; --i) {
+          if ((uint8_t)s[i] == 0xAB && (uint8_t)s[i+1] == 0xCD) {
+            bool valid = true;
+            for (size_t j = i+2; j < s.length(); ++j)
+              if ((uint8_t)s[j] < 0x20 || (uint8_t)s[j] >= 0x80) { valid = false; break; }
+            if (valid) { fec_start = i; break; }
+          }
+          if (i == 0) break;
+        }
+      }
+      if (fec_start != std::string::npos)
+        message.fec = s.substr(fec_start + 2);
+
+      size_t hex_end = (fec_start != std::string::npos) ? fec_start : s.length();
       std::ostringstream raw;
       raw << meta.str() << " bytes=";
-      for (size_t i = 0; i < s.length(); i++)
+      for (size_t i = 0; i < hex_end; i++)
         raw << std::hex << std::setfill('0') << std::setw(2) << (unsigned int)(uint8_t)s[i];
       message.raw_frame = raw.str();
       message.meta      = meta.str();
@@ -1736,6 +1754,7 @@ std::vector<TrunkMessage> P25Parser::parse_message(gr::message::sptr msg, System
     // payload: MI(9) + MFID(1) + algid(1) + keyid(2) + tgid(2) = 15 bytes after NAC strip
     message.nac = nac;
     if (s.length() >= 15) {
+      if (s.length() > 15 && (uint8_t)s[15] == 0xFE) message.fec = s.substr(16);
       uint8_t  mfid  = (uint8_t)s[9];
       uint8_t  algid = (uint8_t)s[10];
       uint16_t keyid = ((uint8_t)s[11] << 8) | (uint8_t)s[12];

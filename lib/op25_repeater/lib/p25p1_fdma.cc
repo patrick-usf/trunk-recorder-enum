@@ -27,6 +27,8 @@
 
 #include <errno.h>
 #include <stdio.h>
+#include <unistd.h>
+#include <fcntl.h>
 #include <stdlib.h>
 #include <stdint.h>
 #include <string.h>
@@ -184,9 +186,11 @@ namespace gr {
             return 0;
         }
 
-        /* P25 3/4 rate trellis decoder for PDU data blocks.
+        /* P25 3/4 rate Viterbi trellis decoder for PDU data blocks.
          * 49 steps, 8 states (next_state = decoded tribit), outputs 18 bytes (144 bits).
-         * next_words_34 derived from DMR ENCODE_TABLE via inverse CMAP — same underlying code. */
+         * next_words_34[s][j]: nibble for transition state s→j.
+         * Table verified identical to dsd-fme dmr_34.c staticX/staticY converted via inv_CMAP.
+         * Uses full Viterbi with traceback; greedy find_min fails due to parity ties at hd=1. */
         static int block_deinterleave_34(bit_vector& bv, unsigned int start, uint8_t* buf) {
             static const uint16_t deinterleave_tb[] = {
                 0,  1,  2,  3,  52, 53, 54, 55, 100,101,102,103, 148,149,150,151,
@@ -214,24 +218,52 @@ namespace gr {
                 {0xB, 0x4, 0x2, 0xD, 0xE, 0x1, 0x7, 0x8},
             };
 
-            uint8_t hd[8];
-            int state = 0;
-            uint8_t tribits[49];
-
+            // Deinterleave and pack 49 nibbles
+            uint8_t nibs[49];
             for (int step = 0; step < 49; step++) {
                 int b = step * 4;
-                uint8_t codeword = (bv[start + deinterleave_tb[b+0]] << 3) |
-                                   (bv[start + deinterleave_tb[b+1]] << 2) |
-                                   (bv[start + deinterleave_tb[b+2]] << 1) |
-                                    bv[start + deinterleave_tb[b+3]];
-                for (int j = 0; j < 8; j++)
-                    hd[j] = count_bits(codeword ^ next_words_34[state][j]);
-                state = find_min(hd, 8);
-                if (state == -1) return -1;
-                tribits[step] = (uint8_t)state;
+                nibs[step] = (bv[start + deinterleave_tb[b+0]] << 3) |
+                             (bv[start + deinterleave_tb[b+1]] << 2) |
+                             (bv[start + deinterleave_tb[b+2]] << 1) |
+                              bv[start + deinterleave_tb[b+3]];
             }
 
-            // Convert tribits[0..47] to 18 bytes (144 bits), MSB-first; skip flush tribit[48]
+            // Viterbi forward pass: 8 states × 49 steps
+            // Systematic encoding: tribit at step t = new state j (next_state = tribit)
+            const uint8_t INF = 0xFF;
+            uint8_t metric[8], new_metric[8];
+            uint8_t back[49][8]; // back[t][j] = prev state s that led to j with min metric
+
+            for (int s = 0; s < 8; s++) metric[s] = INF;
+            metric[0] = 0; // always start at state 0
+
+            for (int t = 0; t < 49; t++) {
+                for (int j = 0; j < 8; j++) new_metric[j] = INF;
+                for (int s = 0; s < 8; s++) {
+                    if (metric[s] == INF) continue;
+                    for (int j = 0; j < 8; j++) {
+                        uint8_t branch = count_bits(nibs[t] ^ next_words_34[s][j]);
+                        uint8_t cand = metric[s] + branch;
+                        if (cand < new_metric[j]) {
+                            new_metric[j] = cand;
+                            back[t][j] = s;
+                        }
+                    }
+                }
+                memcpy(metric, new_metric, 8);
+            }
+
+            // Traceback: forced termination at state 0
+            // tribit at step t = state AFTER step t
+            uint8_t tribits[49];
+            uint8_t st = 0;
+            tribits[48] = st;
+            for (int t = 48; t >= 1; t--) {
+                st = back[t][st];
+                tribits[t-1] = st;
+            }
+
+            // Pack tribits[0..47] → 18 bytes (144 bits), MSB-first; tribit[48] is flush
             memset(buf, 0, 18);
             for (int i = 0; i < 48; i++) {
                 int bit_pos = i * 3;
@@ -239,7 +271,9 @@ namespace gr {
                 buf[(bit_pos + 1) >> 3] |= ((tribits[i] >> 1) & 1) << (7 - ((bit_pos + 1) & 7));
                 buf[(bit_pos + 2) >> 3] |=  (tribits[i]       & 1) << (7 - ((bit_pos + 2) & 7));
             }
-            return 0;
+
+            // Return Hamming cost of best path (caller can use as quality metric)
+            return (int)metric[0];
         }
 
         void p25p1_fdma::set_debug(int debug)
@@ -323,7 +357,7 @@ namespace gr {
 			p1voice_decode.clear();
 		}
 
-        void p25p1_fdma::process_duid(uint32_t const duid, uint32_t const nac, const uint8_t* buf, const int len) {
+        void p25p1_fdma::process_duid(uint32_t const duid, uint32_t const nac, const uint8_t* buf, const int len, const std::string& fec) {
             char wbuf[256];
             int p = 0;
             if (!d_do_msgq)
@@ -332,10 +366,15 @@ namespace gr {
             wbuf[p++] = (nac >> 8) & 0xff;
             wbuf[p++] = nac & 0xff;
             if (buf) {
-                memcpy(&wbuf[p], buf, len);	// copy data
+                memcpy(&wbuf[p], buf, len);
                 p += len;
             }
-            send_msg(std::string(wbuf, p), duid);
+            std::string msg(wbuf, p);
+            if (!fec.empty()) {
+                msg += (char)0xFE;
+                msg += fec;
+            }
+            send_msg(msg, duid);
             qtimer.reset();
         }
 
@@ -359,6 +398,8 @@ namespace gr {
             }
             ec = rs16.decode(HB); // Reed Solomon (36,20,17) error correction
 
+            fec_seg gly_seg = {"GLY", (int)gly_errs, (int)gly_errs, 0};
+
             if ((ec >= 0) && (ec <= 8)) { // upper limit of 8 corrections
                 j = 27;												// 72 bit MI
                 for (i = 0; i < 9;) {
@@ -374,6 +415,9 @@ namespace gr {
 
                 curr_grp_id = vf_tgid;
 
+                fec_seg rs16_seg = {"RS16", ec, ec, gly_seg.remaining};
+                std::string fec_str = fec_seg_str(gly_seg) + "|" + fec_seg_str(rs16_seg);
+
                 std::string hdu_pdu(17, '\0');
                 hdu_pdu[0]  = (framer->nac >> 8) & 0xff;
                 hdu_pdu[1]  =  framer->nac       & 0xff;
@@ -384,6 +428,8 @@ namespace gr {
                 hdu_pdu[14] =  ess_keyid       & 0xff;
                 hdu_pdu[15] = (vf_tgid   >> 8) & 0xff;
                 hdu_pdu[16] =  vf_tgid         & 0xff;
+                hdu_pdu += (char)0xFE;
+                hdu_pdu += fec_str;
                 send_msg(hdu_pdu, M_P25_HDU);
 
                 if (d_debug >= 10) {
@@ -398,17 +444,25 @@ namespace gr {
             }
         }
 
-        void p25p1_fdma::process_LLDU(const bit_vector& A, std::vector<uint8_t>& HB) {
+        void p25p1_fdma::process_LLDU(const bit_vector& A, std::vector<uint8_t>& HB, fec_seg& hmg_out) {
             process_duid(framer->duid, framer->nac, NULL, 0);
 
             int i, j, k;
             k = 0;
-            for (i = 0; i < 24; i ++) { // 24 10-bit codewords
+            hmg_out = {"HMG", 0, 0, 0};
+            for (i = 0; i < 24; i++) {
                 uint32_t CW = 0;
-                for (j = 0; j < 10; j++) {  // 10 bits / cw
+                for (j = 0; j < 10; j++)
                     CW = (CW << 1) + A[ imbe_ldu_ls_data_bits[k++] ];
+                uint32_t dat = CW >> 4, par = CW & 0x0f;
+                uint32_t syn = hmg1063EncTbl[dat] ^ par;
+                uint32_t corr = hmg1063DecTbl[syn];
+                if (syn != 0) {
+                    hmg_out.detected++;
+                    if (corr != 0) hmg_out.corrected++;
+                    else           hmg_out.remaining = 1;
                 }
-                HB[39 + i] = hmg1063Dec( CW >> 4, CW & 0x0f );
+                HB[39 + i] = (uint8_t)(dat ^ corr);
             }
         }
 
@@ -418,8 +472,9 @@ namespace gr {
             }
 
             std::vector<uint8_t> HB(63,0); // hexbit vector
-            process_LLDU(A, HB);
-            process_LCW(HB);
+            fec_seg hmg_seg;
+            process_LLDU(A, HB, hmg_seg);
+            process_LCW(HB, hmg_seg);
 
             if (d_debug >= 10) {
                 fprintf (stderr, "\n");
@@ -439,7 +494,8 @@ namespace gr {
             }
 
             std::vector<uint8_t> HB(63,0); // hexbit vector
-            process_LLDU(A, HB);
+            fec_seg hmg_seg;
+            process_LLDU(A, HB, hmg_seg);
 
             int i, j, ec;
             ec = rs8.decode(HB); // Reed Solomon (24,16,9) error correction
@@ -459,7 +515,7 @@ namespace gr {
                     fprintf (stderr, "ESS: algid=%x, keyid=%x, mi=%02x %02x %02x %02x %02x %02x %02x %02x %02x, rs_errs=%d\n",
                             next_algid, next_keyid,
                             next_mi[0], next_mi[1], next_mi[2], next_mi[3], next_mi[4], next_mi[5], next_mi[6], next_mi[7], next_mi[8],
-                            ec); 
+                            ec);
                 }
             }
 
@@ -471,10 +527,12 @@ namespace gr {
                 ess_keyid = next_keyid;
                 memcpy(ess_mi, next_mi, sizeof(next_mi));
 
+                fec_seg rs8_seg = {"RS8", ec, ec, hmg_seg.remaining};
+                std::string fec_str = fec_seg_str(hmg_seg) + "|" + fec_seg_str(rs8_seg);
+
                 // Forward ESS via the LCW message type (type 19).
                 // Payload: NAC(2) + MI(9) + algid(1) + keyid(2) = 14 bytes total.
-                // After the parser strips NAC, s.length()==12 identifies this as ESS
-                // vs LCW (s.length()==10), no extra discriminator byte needed.
+                // After the parser strips NAC, s.length()==12 (before fec) identifies ESS.
                 std::string ess_pdu(14, '\0');
                 ess_pdu[0] = (framer->nac >> 8) & 0xff;
                 ess_pdu[1] =  framer->nac       & 0xff;
@@ -482,6 +540,8 @@ namespace gr {
                 ess_pdu[11] = next_algid;
                 ess_pdu[12] = (next_keyid >> 8) & 0xff;
                 ess_pdu[13] =  next_keyid       & 0xff;
+                ess_pdu += (char)0xFE;
+                ess_pdu += fec_str;
                 send_msg(ess_pdu, M_P25_FDMA_LCW);
             }
         }
@@ -526,17 +586,19 @@ namespace gr {
                     CW = (CW << 1) + A [ hdu_codeword_bits[k++] ];
                 }
                 uint32_t D = gly24128Dec(CW, &errs);
+                gly_errs += errs;
                 HB[39 + i] = D >> 6;
                 HB[40 + i] = D & 63;
             }
-            process_LCW(HB);
+            fec_seg gly_seg = {"GLY", (int)gly_errs, (int)gly_errs, 0};
+            process_LCW(HB, gly_seg);
 
             if (d_debug >= 10) {
                 fprintf (stderr, ", gly_errs=%lu\n", gly_errs);
             }
         }
 
-        void p25p1_fdma::process_LCW(std::vector<uint8_t>& HB) {
+        void p25p1_fdma::process_LCW(std::vector<uint8_t>& HB, const fec_seg& hmg_in) {
             int ec = rs12.decode(HB); // Reed Solomon (24,12,13) error correction
             if ((ec < 0) || (ec > 6)) // upper limit of 6 corrections
                 return; // failed CRC
@@ -551,12 +613,17 @@ namespace gr {
                 j += 4;
             }
 
+            fec_seg rs12_seg = {"RS12", ec, ec, hmg_in.remaining};
+            std::string fec_str = fec_seg_str(hmg_in) + "|" + fec_seg_str(rs12_seg);
+
             std::string pdu(12,0);
             pdu[0] = (framer->nac >> 8) & 0xff; pdu[1] = framer->nac & 0xff;
             for (int i = 0; i < 9; i++) {
                 pdu[2+i] = lcw[i];
             }
             pdu[11] = (uint8_t)framer->duid; // source DUID: 0x05=LDU1, 0x0f=TDULC
+            pdu += (char)0xFE;
+            pdu += fec_str;
             send_msg(pdu, M_P25_FDMA_LCW);
 
             int pb =   (lcw[0] >> 7);
@@ -712,7 +779,6 @@ namespace gr {
                     }
                 } else {
                     // Decode data blocks (1..blks) with 3/4 rate trellis (18 bytes each).
-                    // Rebuild the status-stripped bit vector from the raw frame for this pass.
                     bit_vector bv34;
                     bv34.reserve(fr_len >> 1);
                     for (unsigned int d = 0; d < fr_len >> 1; d++) {
@@ -725,24 +791,41 @@ namespace gr {
                         bv34.push_back(fr[d*2]);
                         bv34.push_back(fr[d*2+1]);
                     }
+
+                    fec_seg trl_seg = {"TRL", 0, 0, 0};
                     std::vector<std::vector<uint8_t>> data_blks;
                     for (uint8_t bi = 1; bi <= blks; bi++) {
                         unsigned int start = 48 + 64 + bi * 196;
                         if (start + 196 > bv34.size()) break;
                         std::vector<uint8_t> blk(18, 0);
-                        if (block_deinterleave_34(bv34, start, blk.data()) == 0)
-                            data_blks.push_back(std::move(blk));
-                        else
-                            break;
+                        int cost = block_deinterleave_34(bv34, start, blk.data());
+                        trl_seg.detected++;
+                        trl_seg.corrected++;
+                        if (cost > 20) trl_seg.remaining = 1;
+                        if (d_debug >= 10) {
+                            fprintf(stderr, "[PDU_BLK34] bi=%u cost=%d buf=%02x%02x%02x%02x\n",
+                                    bi, cost, blk[0], blk[1], blk[2], blk[3]);
+                        }
+                        data_blks.push_back(std::move(blk));
                     }
-                    fprintf(stderr, "[PDU_BLK] nac=0x%03x fmt=%02x blks=%u data_decoded=%zu\n",
-                            framer->nac, fmt, blks, data_blks.size());
-                    // Serialize: 12-byte header + 18-byte data blocks
+
+                    if (d_debug >= 10) {
+                        fprintf(stderr, "[PDU_BLK] nac=0x%03x fmt=%02x blks=%u data_decoded=%zu fr_len=%u bv34=%zu\n",
+                                framer->nac, fmt, blks, data_blks.size(), fr_len, bv34.size());
+                    }
+
+                    // Serialize: 12-byte header + 18-byte data blocks, then fec section
                     std::vector<uint8_t> payload;
                     payload.insert(payload.end(),
                                    deinterleave_buf[0].begin(), deinterleave_buf[0].end());
                     for (const auto& blk : data_blks)
                         payload.insert(payload.end(), blk.begin(), blk.end());
+                    std::string fec_str = fec_seg_str(trl_seg);
+                    std::string fec_marker;
+                    fec_marker += (char)0xAB;
+                    fec_marker += (char)0xCD;
+                    fec_marker += fec_str;
+                    payload.insert(payload.end(), fec_marker.begin(), fec_marker.end());
                     process_duid(M_P25_RAW_PDU, framer->nac, payload.data(), payload.size());
                 }
 

@@ -65,6 +65,7 @@ struct TrunkMessage {
   FrameDirection direction = DIR_UNKNOWN;  // DIR_OSP=downlink, DIR_ISP=uplink
   std::string raw_frame;         // hex-encoded raw bytes for unknown/undecoded frames
   uint8_t duid = 0;              // P25 DUID from NID (0x07=TSBK, 0x0c=PDU, 0x0f=TDULC, 0x05=LDU1, etc.)
+  std::string fec;               // FEC error statistics, e.g. "HMG(d=0,c=0,r=0)|RS8(d=0,c=0,r=0)"
 };
 
 class TrunkParser {
