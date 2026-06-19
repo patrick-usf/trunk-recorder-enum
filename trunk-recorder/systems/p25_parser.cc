@@ -1348,6 +1348,7 @@ static void log_with_freq(std::vector<TrunkMessage> &msgs, System *sys,
     for (auto &m : msgs) {
       if (m.freq == 0.0)
         m.freq = fallback_freq;
+      m.recv_freq = fallback_freq;
     }
   }
   P25FrameLogger::instance().log_messages(msgs, sys, frame_type);
