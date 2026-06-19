@@ -40,6 +40,8 @@
 #include "p25_frame.h"
 #include "p25_framer.h"
 #include "rs.h"
+#include <iomanip>
+#include <sstream>
 #include "p25_crypt_algs.h"
 #include "imbe_vocoder/imbe_vocoder.h"
 
@@ -358,18 +360,14 @@ namespace gr {
 		}
 
         void p25p1_fdma::process_duid(uint32_t const duid, uint32_t const nac, const uint8_t* buf, const int len, const std::string& fec) {
-            char wbuf[256];
-            int p = 0;
             if (!d_do_msgq)
                 return;
-            assert (len+2 <= (int)sizeof(wbuf));
-            wbuf[p++] = (nac >> 8) & 0xff;
-            wbuf[p++] = nac & 0xff;
-            if (buf) {
-                memcpy(&wbuf[p], buf, len);
-                p += len;
-            }
-            std::string msg(wbuf, p);
+            std::string msg;
+            msg.reserve(2 + len + (fec.empty() ? 0 : 1 + (int)fec.size()));
+            msg += (char)((nac >> 8) & 0xff);
+            msg += (char)(nac & 0xff);
+            if (buf)
+                msg.append(reinterpret_cast<const char*>(buf), len);
             if (!fec.empty()) {
                 msg += (char)0xFE;
                 msg += fec;
@@ -815,12 +813,32 @@ namespace gr {
                     }
 
                     // Serialize: 12-byte header + 18-byte data blocks, then fec section
+                    std::string fec_str = fec_seg_str(trl_seg);
+
+                    // Append raw pre-FEC bits: pack bv34[raw_start..raw_start+blks*196-1]
+                    // MSB-first. raw_start = 48 (sync bits) + 64 (NID bits) + 196 (header
+                    // block bits) = first data block's offset in bv34.
+                    {
+                        const unsigned int raw_start = 48 + 64 + 196;
+                        const unsigned int n_bits    = (unsigned int)data_blks.size() * 196;
+                        std::vector<uint8_t> packed((n_bits + 7) / 8, 0);
+                        for (unsigned int i = 0; i < n_bits; i++) {
+                            unsigned int idx = raw_start + i;
+                            if (idx < bv34.size())
+                                packed[i / 8] |= (bv34[idx] & 1) << (7 - (i & 7));
+                        }
+                        std::ostringstream hex_oss;
+                        hex_oss << std::hex << std::setfill('0');
+                        for (uint8_t b : packed)
+                            hex_oss << std::setw(2) << (unsigned int)b;
+                        fec_str += "|RAWBITS:" + hex_oss.str();
+                    }
+
                     std::vector<uint8_t> payload;
                     payload.insert(payload.end(),
                                    deinterleave_buf[0].begin(), deinterleave_buf[0].end());
                     for (const auto& blk : data_blks)
                         payload.insert(payload.end(), blk.begin(), blk.end());
-                    std::string fec_str = fec_seg_str(trl_seg);
                     std::string fec_marker;
                     fec_marker += (char)0xAB;
                     fec_marker += (char)0xCD;

@@ -1736,8 +1736,16 @@ std::vector<TrunkMessage> P25Parser::parse_message(gr::message::sptr msg, System
           if (i == 0) break;
         }
       }
-      if (fec_start != std::string::npos)
-        message.fec = s.substr(fec_start + 2);
+      if (fec_start != std::string::npos) {
+        std::string fec_full = s.substr(fec_start + 2);
+        auto rawbits_pos = fec_full.find("|RAWBITS:");
+        if (rawbits_pos != std::string::npos) {
+          message.pre_fec_bits = fec_full.substr(rawbits_pos + 9);
+          message.fec          = fec_full.substr(0, rawbits_pos);
+        } else {
+          message.fec = fec_full;
+        }
+      }
 
       size_t hex_end = (fec_start != std::string::npos) ? fec_start : s.length();
       std::ostringstream raw;
