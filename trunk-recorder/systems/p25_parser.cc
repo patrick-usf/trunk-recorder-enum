@@ -1340,6 +1340,15 @@ void printbincharpad(char c) {
   // std::cout << " | ";
 }
 
+static std::string bytes_to_hex(const std::string &data, size_t max_len = std::string::npos) {
+  std::ostringstream oss;
+  oss << std::hex << std::setfill('0');
+  size_t len = (max_len == std::string::npos) ? data.size() : std::min(data.size(), max_len);
+  for (size_t i = 0; i < len; ++i)
+    oss << std::setw(2) << (unsigned int)(uint8_t)data[i];
+  return oss.str();
+}
+
 // Apply fallback_freq to messages whose freq field is 0, then log.
 // Used by the data-channel monitor so every frame carries the tuned channel frequency.
 static void log_with_freq(std::vector<TrunkMessage> &msgs, System *sys,
@@ -1451,7 +1460,7 @@ std::vector<TrunkMessage> P25Parser::parse_message(gr::message::sptr msg, System
     b <<= 16; // for missing crc
 
     messages = decode_tsbk(b, nac, sys_num);
-    for (auto &m : messages) m.duid = 0x07;
+    { std::string fhex = bytes_to_hex(s); for (auto &m : messages) { m.duid = 0x07; m.frame_hex = fhex; } }
     log_with_freq(messages, system, 7, fallback_freq);
     return messages;
   } else if (type == 12) { // # trunk: MBT
@@ -1498,7 +1507,7 @@ std::vector<TrunkMessage> P25Parser::parse_message(gr::message::sptr msg, System
     BOOST_LOG_TRIVIAL(debug) <<  "MBT Header: " <<  header;
     BOOST_LOG_TRIVIAL(debug) <<  "MBT  Data   " <<  mbt_data; */
     messages = decode_mbt_data(opcode, header, mbt_data, link_id, nac, sys_num);
-    for (auto &m : messages) m.duid = 0x0c;
+    { std::string fhex = bytes_to_hex(s); for (auto &m : messages) { m.duid = 0x0c; m.frame_hex = fhex; } }
     log_with_freq(messages, system, 12, fallback_freq);
     return messages;
   } else if (type == 15) { // TDULC — Terminator Data Unit with Link Control (DUID 0x0F)
@@ -1518,6 +1527,7 @@ std::vector<TrunkMessage> P25Parser::parse_message(gr::message::sptr msg, System
       // op25 sends type-15 as a 2-byte NAC-only notification; LC word arrives separately as type-19 LCW
       message.meta = "tdulc_event";
     }
+    message.frame_hex = bytes_to_hex(s, std::min(s.size(), (size_t)12));
     messages.push_back(message);
     log_with_freq(messages, system, 15, fallback_freq);
     return messages;
@@ -1561,6 +1571,8 @@ std::vector<TrunkMessage> P25Parser::parse_message(gr::message::sptr msg, System
       if (mi_changed)               raw << " mi_changed=1";
       message.raw_frame = raw.str();
       message.meta      = message.raw_frame;
+      // 12 bytes: MI(9) + algid(1) + keyid_hi(1) + keyid_lo(1); FEC marker at s[12] when present
+      message.frame_hex = bytes_to_hex(s, 12);
     } else if (s.length() >= 9) { // LCW from LDU1 or TDULC
       if (s.length() > 10 && (uint8_t)s[10] == 0xFE) message.fec = s.substr(11);
       uint8_t source_duid = (s.length() >= 10) ? (uint8_t)s[9] : 0x05;
@@ -1667,6 +1679,8 @@ std::vector<TrunkMessage> P25Parser::parse_message(gr::message::sptr msg, System
       message.raw_frame = raw.str();
       if (message.message_type == UNKNOWN)
         message.meta = message.raw_frame;
+      // 10 bytes: 9 LCW payload + source_duid; FEC marker at s[10] when present
+      message.frame_hex = bytes_to_hex(s, std::min(s.size(), (size_t)10));
     }
     messages.push_back(message);
     log_with_freq(messages, system, 19, fallback_freq);
@@ -1685,6 +1699,7 @@ std::vector<TrunkMessage> P25Parser::parse_message(gr::message::sptr msg, System
         raw << std::setw(2) << (unsigned int)(uint8_t)s[i];
       message.raw_frame = raw.str();
       message.meta      = message.raw_frame;
+      message.frame_hex = bytes_to_hex(s);
     }
     message.message_type = UNKNOWN;
     messages.push_back(message);
@@ -1754,6 +1769,7 @@ std::vector<TrunkMessage> P25Parser::parse_message(gr::message::sptr msg, System
         raw << std::hex << std::setfill('0') << std::setw(2) << (unsigned int)(uint8_t)s[i];
       message.raw_frame = raw.str();
       message.meta      = meta.str();
+      message.frame_hex = bytes_to_hex(s, hex_end);
     }
     message.message_type = UNKNOWN;
     messages.push_back(message);
@@ -1789,6 +1805,8 @@ std::vector<TrunkMessage> P25Parser::parse_message(gr::message::sptr msg, System
       if (mi_zero && algid != 0x80) raw << " mi_zero=1";
       message.raw_frame = raw.str();
       message.meta      = message.raw_frame;
+      // 15 bytes: MI(9)+MFID(1)+algid(1)+keyid(2)+tgid(2); FEC marker at s[15] when present
+      message.frame_hex = bytes_to_hex(s, 15);
     }
     message.message_type = UNKNOWN;
     messages.push_back(message);
