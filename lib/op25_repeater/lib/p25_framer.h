@@ -51,6 +51,8 @@ class p25_framer
         bit_vector frame_body;	// all bits in frame
         uint32_t frame_size;	// number of bits in frame_body
         uint32_t bch_errors;	// number of errors detected in bch
+        uint64_t raw_fs  = 0;   // received 48-bit FS word at sync detection
+        uint64_t raw_nid = 0;   // received 64-bit NID before BCH correction
 };
 
 #endif /* INCLUDED_P25_FRAMER_H */

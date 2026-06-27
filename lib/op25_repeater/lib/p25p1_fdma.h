@@ -130,6 +130,9 @@ namespace gr {
                 uint8_t  ess_mi[9] = {0};
                 uint16_t vf_tgid;
 
+                uint16_t d_pending_crc = 0;
+                std::vector<uint8_t> d_pending_status_dibits;
+
                 imbe_vocoder vocoder; // for original full rate vocoder
 
             public:

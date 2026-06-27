@@ -153,6 +153,7 @@ bool p25_framer::rx_sym(uint8_t dibit) {
     } else if (nid_syms >= 33) {
         // nid completely received
         nid_syms = 0;
+        raw_nid = nid_accum;
         bool bch_rc = nid_codeword(nid_accum);
         if (bch_rc) {   // if ok to start accumulating frame data
             next_bit = 48 + 64;
@@ -170,6 +171,7 @@ bool p25_framer::rx_sym(uint8_t dibit) {
         nid_syms++; // count symbols in nid
 
     if(check_frame_sync((nid_accum & P25_FRAME_SYNC_MASK) ^ P25_FRAME_SYNC_MAGIC, 6, 48)) {
+        raw_fs = nid_accum & P25_FRAME_SYNC_MASK;
         nid_syms = 1;
     }
 
@@ -200,6 +202,8 @@ uint32_t p25_framer::load_nid(const uint8_t *syms, int nsyms, const uint64_t fs)
     if (nsyms < 57)
         return 0;
 
+    raw_fs = fs;
+
     uint8_t dibit;
     next_bit = 0;
     for (int i = 0; i < nsyms; i++) {
@@ -215,6 +219,7 @@ uint32_t p25_framer::load_nid(const uint8_t *syms, int nsyms, const uint64_t fs)
         accum <<= 1;
         accum |= frame_body[i];
     }
+    raw_nid = accum;
     bool bch_rc = nid_codeword(accum);
     if (!bch_rc) {
         if (d_debug >= 10)

@@ -334,3 +334,147 @@ If `data_decoded=0` persists after the table is confirmed in the binary, test in
 |------|--------|
 | `lib/op25_repeater/lib/p25p1_fdma.cc` | `block_deinterleave_34()`, non-MBT PDU 3/4 rate decode, status symbol fix |
 | `lib/op25_repeater/lib/p25_framer.cc` | `max_frame_lengths[12]`: 962 → 1152 |
+
+---
+
+## Phase 6: p25.rs Analysis — Table Confirmed, Algorithm Diagnosis, Offline Plan
+
+**Date:** 2026-06-14
+
+### What We Found in kchmck/p25.rs
+
+The [p25.rs project](https://github.com/kchmck/p25.rs) is a complete P25 implementation in Rust
+with both 1/2-rate (`DibitDecoder`) and 3/4-rate (`TribitDecoder`) convolutional decoders, adapted
+from *Coding Theory and Cryptography: The Essentials* (Hankerson, Hoffman, et al., 2000). Source
+files examined: `src/coding/trellis.rs`, `src/data/interleave.rs`, `src/consts.rs`,
+`src/data/coder.rs`.
+
+#### The `next_words_34` table is correct
+
+`TribitStates::pair_idx` in p25.rs gives an 8×8 table of **pair indices** (0–15) into a shared
+`PAIRS` table of `(hi_dibit, lo_dibit)` values. Converting:
+
+```rust
+const PAIRS: [(u8, u8); 16] = [
+    (0b00,0b10),(0b10,0b10),(0b01,0b11),(0b11,0b11),
+    (0b11,0b10),(0b01,0b10),(0b10,0b11),(0b00,0b11),
+    (0b11,0b01),(0b01,0b01),(0b10,0b00),(0b00,0b00),
+    (0b00,0b01),(0b10,0b01),(0b01,0b00),(0b11,0b00),
+];
+```
+
+Forming nibble `(hi << 2) | lo` for each `TribitStates::pair_idx[s][j]` entry produces:
+
+```
+State 0: {0x2, 0xD, 0xE, 0x1, 0x7, 0x8, 0xB, 0x4}  ← exactly matches our derived table
+State 1: {0xE, 0x1, 0x7, 0x8, 0xB, 0x4, 0x2, 0xD}
+State 2: {0xA, 0x5, 0x6, 0x9, 0xF, 0x0, 0x3, 0xC}
+...
+```
+
+**The `next_words_34` table derived from DMR via CMAP is confirmed identical to p25.rs's authoritative
+P25 implementation.** The table is not the bug.
+
+#### The deinterleave table is also confirmed
+
+`DeinterleaveRedirector::REDIRECTS[98]` in p25.rs matches `_P25_INTERLEAVE` used in our Python
+capture code (same permutation, just expressed at the dibit level rather than the bit level).
+`CODING_DIBITS = 98` confirms each block contributes exactly 98 channel dibits (101 raw − 3 status).
+
+#### Three algorithmic differences from our implementation
+
+| Property | Our greedy/full-traceback | p25.rs |
+|----------|--------------------------|--------|
+| Viterbi type | Greedy (`find_min`, requires unique min) OR full traceback (49-step) | Truncated Viterbi, sliding window = 4 steps |
+| On ambiguity | Hard abort, returns -1 for whole block | Emits `Err(())` per symbol, continues |
+| Input format | 4-bit nibbles assembled from deinterleaved bits | Dibit stream, consumed 2 at a time |
+
+#### Why the greedy decoder always failed: parity ties
+
+In `next_words_34`, all 8 codewords in rows 0, 1, 6, 7 have **odd parity**; rows 2–5 have
+**even parity**. When the received nibble has the opposite parity from the table row (which happens
+with any single-bit error, a common RF occurrence), every codeword is at Hamming distance ≥ 1,
+and exactly 4 of the 8 entries sit at distance 1 — creating a 4-way tie. `find_min(hd, 8)` returns
+-1 on every step, so the decoder never produces a single tribit. Even on a clean channel, a single
+bit flip anywhere in the nibble causes this.
+
+The full-traceback Viterbi avoids the per-step abort but there is an undiagnosed bug in the C++
+implementation: `[PDU_BLK34]` diagnostic lines never appear in the log despite `blks > 0`, meaning
+the inner loop does not execute — likely a `bv34.size()` vs. `fr_len` mismatch that needs a
+`[PDU_DBG]` diagnostic print to isolate.
+
+#### Why truncated Viterbi (window=4) works where greedy doesn't
+
+Instead of making a final decision at each step, the truncated Viterbi:
+1. Maintains 8 survivor paths (one per state) each with a 4-step history
+2. At each step, updates all 8 paths from all possible predecessors
+3. Yields the decision from 4 steps ago, when the path has had time to converge
+4. Never aborts — emits `Err(())` on a tie but continues decoding the rest
+
+This handles burst errors that would cause consecutive greedy failures, and eliminates the parity-tie
+abort because path metrics accumulate across steps rather than being decided locally.
+
+---
+
+### Offline Development Plan
+
+**Motivation:** Each iteration of the C++ Viterbi requires a full rebuild (~30 s) and a trunk-recorder
+restart to pick up the new `.so`, then waiting for live PDU traffic to exercise the code. The offline
+harness reduces that to a Python script that runs in under 1 second against a captured dataset.
+
+#### Step 1 — Capture full multi-block PDU frames
+
+`dl_frame_capture.py` currently captures only the header block (`DUID_PAY_DIBITS[0xC] = 101`).
+Changing this to `505` (= 5 × 101 raw air dibits) captures the header + up to 4 data blocks per
+frame. Each DB row then holds:
+
+```
+raw_bytes: 32 NID + 505 body = 537 dibits → ceil(1074/8) = 135 bytes packed (4 dibits/byte)
+n_dibits: 537
+pdu_blks: N from decoded header (how many of the 4 available blocks are valid data)
+```
+
+Block offsets within `all_dibits` (NID + body):
+
+| Block | Dibit range | Content |
+|-------|-------------|---------|
+| Header | [32, 133) | 101 raw → 98 chan → 1/2-rate trellis → 12 bytes |
+| Data 1 | [133, 234) | 101 raw → 98 chan → 3/4-rate trellis → 18 bytes |
+| Data 2 | [234, 335) | same |
+| Data 3 | [335, 436) | same |
+| Data 4 | [436, 537) | same |
+
+#### Step 2 — Python test harness (`/home/sdr/P25/pdu_trellis_test.py`)
+
+Ports the p25.rs algorithm directly to Python:
+- `PAIR_IDX[8][8]` from `TribitStates::pair_idx`
+- `PAIRS[16]` dibit-pair table
+- `DEINTERLEAVE[98]` from `DeinterleaveRedirector::REDIRECTS`
+- Full-traceback Viterbi (49 steps, forced termination at state 0)
+- Self-test using the p25.rs `test_tribit_decoder` encode→error→decode round-trip
+- Live DB query: decode each captured frame, print per-block Viterbi cost and first 4 decoded bytes
+- CRC9 validation per confirmed data block (polynomial TBD from first clean decode)
+
+Runs instantly. Edit algorithm, re-run immediately — no rebuild needed.
+
+#### Step 3 — Fix C++ `process_PDU` inner loop bug (separate, parallel)
+
+The `[PDU_DBG]` diagnostic (already added to C++ but not yet built) will print `fr_len` and
+`bv34.size()` to reveal why the data-block decode loop never executes. Fix independently of the
+trellis algorithm work.
+
+#### Step 4 — Port proven Python decoder back to C++
+
+Once the Python harness decodes data blocks with passing CRC9, port the truncated Viterbi
+(window=4, 8 states) to C++ as the final `block_deinterleave_34()` implementation.
+
+---
+
+## Key Files Modified
+
+| File | Change |
+|------|--------|
+| `lib/op25_repeater/lib/p25p1_fdma.cc` | `block_deinterleave_34()`, non-MBT PDU 3/4 rate decode, status symbol fix |
+| `lib/op25_repeater/lib/p25_framer.cc` | `max_frame_lengths[12]`: 962 → 1152 |
+| `P25/dl_frame_capture.py` | `DUID_PAY_DIBITS[0xC]`: 101 → 505 (capture full multi-block PDU) |
+| `P25/pdu_trellis_test.py` | New: offline 3/4-rate trellis test harness (p25.rs algorithm in Python) |

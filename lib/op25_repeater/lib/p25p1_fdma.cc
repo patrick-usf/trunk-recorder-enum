@@ -622,6 +622,9 @@ namespace gr {
             pdu[11] = (uint8_t)framer->duid; // source DUID: 0x05=LDU1, 0x0f=TDULC
             pdu += (char)0xFE;
             pdu += fec_str;
+            // Motorola LCW: byte[8] per Motorola layout (+8) is CRC/protected — log in pending_crc slot
+            if ((lcw[0] & 0x40) == 0 && lcw[1] == 0x90)
+                d_pending_crc = lcw[8];
             send_msg(pdu, M_P25_FDMA_LCW);
 
             int pb =   (lcw[0] >> 7);
@@ -702,10 +705,15 @@ namespace gr {
             uint8_t op, lb = 0;
             block_vector deinterleave_buf;
             if (process_blocks(fr, fr_len, deinterleave_buf) == 0) {
+                std::vector<uint8_t> saved_ss = d_pending_status_dibits;
                 for (size_t j = 0; (j < deinterleave_buf.size()) && (lb == 0); j++) {
-                    if (crc16(deinterleave_buf[j].data(), 12) != 0) // validate CRC
+                    d_pending_crc = ((uint16_t)(uint8_t)deinterleave_buf[j][10] << 8) | (uint8_t)deinterleave_buf[j][11];
+                    if (crc16(deinterleave_buf[j].data(), 12) != 0) { // validate CRC
+                        d_pending_crc = 0;
                         return;
+                    }
 
+                    d_pending_status_dibits = saved_ss;
                     lb = deinterleave_buf[j][0] >> 7;	// last block flag
                     op = deinterleave_buf[j][0] & 0x3f;	// opcode
                     process_duid(framer->duid, framer->nac, deinterleave_buf[j].data(), 10);
@@ -851,6 +859,7 @@ namespace gr {
         }
 
         int p25p1_fdma::process_blocks(const bit_vector& fr, uint32_t& fr_len, block_vector& dbuf) {
+            d_pending_status_dibits.clear();
             bit_vector bv;
             bv.reserve(fr_len >> 1);
             for (unsigned int d=0; d < fr_len >> 1; d++) {	  // eliminate status bits from frame
@@ -858,10 +867,16 @@ namespace gr {
                 // Each 101-dibit PDU block has status at block-relative positions 14, 50, 86.
                 // Global period-36 removal drifts -7 dibits/block, corrupting blocks 1+.
                 if (d < 57) {
-                    if ((d+1) % 36 == 0) continue;   // NID-area status
+                    if ((d+1) % 36 == 0) {
+                        d_pending_status_dibits.push_back((fr[d*2] << 1) | fr[d*2+1]);
+                        continue;
+                    }
                 } else {
                     unsigned int block_off = (d - 57) % 101;
-                    if (block_off == 14 || block_off == 50 || block_off == 86) continue;
+                    if (block_off == 14 || block_off == 50 || block_off == 86) {
+                        d_pending_status_dibits.push_back((fr[d*2] << 1) | fr[d*2+1]);
+                        continue;
+                    }
                 }
                 bv.push_back(fr[d*2]);
                 bv.push_back(fr[d*2+1]);
@@ -1023,10 +1038,30 @@ namespace gr {
             if (!d_do_msgq)
                 return;
 
-            gr::message::sptr msg = gr::message::make_from_string(msg_str, msg_type);     
+            std::string msg = msg_str;
 
+            // Append fixed 27-byte raw frame metadata trailer
+            // Format: [0xFD][raw_fs:6][raw_nid:8][bch_errors:1][crc16:2][ss_count:1][ss_dibits:8]
+            msg += (char)0xFD;
+            uint64_t rfs = framer ? framer->raw_fs : 0ULL;
+            for (int i = 5; i >= 0; --i) msg += (char)((rfs >> (i * 8)) & 0xff);
+            uint64_t rnid = framer ? framer->raw_nid : 0ULL;
+            for (int i = 7; i >= 0; --i) msg += (char)((rnid >> (i * 8)) & 0xff);
+            msg += (char)(framer ? (framer->bch_errors & 0xff) : 0);
+            msg += (char)((d_pending_crc >> 8) & 0xff);
+            msg += (char)(d_pending_crc & 0xff);
+            uint8_t ss_count = (uint8_t)std::min(d_pending_status_dibits.size(), (size_t)8);
+            msg += (char)ss_count;
+            for (int i = 0; i < 8; ++i)
+                msg += (char)(i < ss_count ? d_pending_status_dibits[i] : 0);
+
+            // Reset pending state for next frame
+            d_pending_crc = 0;
+            d_pending_status_dibits.clear();
+
+            gr::message::sptr msg_obj = gr::message::make_from_string(msg, msg_type);
             if (!d_msg_queue->full_p())
-                d_msg_queue->insert_tail(msg);
+                d_msg_queue->insert_tail(msg_obj);
         }
 
         void p25p1_fdma::process_frame() {

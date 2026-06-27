@@ -7,6 +7,14 @@
 #include <iomanip>
 #include <sstream>
 
+static std::string u64_to_hex(uint64_t v, int n_bytes) {
+  std::ostringstream oss;
+  oss << std::hex << std::setfill('0');
+  for (int i = n_bytes - 1; i >= 0; --i)
+    oss << std::setw(2) << ((v >> (i * 8)) & 0xff);
+  return oss.str();
+}
+
 P25FrameLogger &P25FrameLogger::instance() {
   static P25FrameLogger inst;
   return inst;
@@ -114,7 +122,8 @@ void P25FrameLogger::write_header() {
       "timestamp\tsys_name\tnac\tduid\tdirection\tframe_type\tmfid\topcode_hex\t"
       "opcode_name\tdecode_status\ttalkgroup\tsource_id\tfreq_mhz\t"
       "emergency\tencrypted\tphase2_tdma\ttdma_slot\twacn\tsys_id\t"
-      "rfss_id\tsite_id\traw_frame\tmeta\tfec\tpre_fec_bits\trecv_freq\tframe_hex\n";
+      "rfss_id\tsite_id\traw_frame\tmeta\tfec\tpre_fec_bits\trecv_freq\tframe_hex\t"
+      "raw_fs\traw_nid\tbch_errors\ttsbk_crc\tss_count\tstatus_dibits\n";
   log_file_ << hdr;
   bytes_written_ += std::string(hdr).size();
 }
@@ -386,6 +395,12 @@ std::string P25FrameLogger::format_record(const TrunkMessage &msg,
       << msg.fec                    << '\t'
       << msg.pre_fec_bits           << '\t'
       << recv_freq_str.str()        << '\t'
-      << msg.frame_hex;
+      << msg.frame_hex              << '\t'
+      << (msg.raw_fs  ? u64_to_hex(msg.raw_fs,  6) : "") << '\t'
+      << (msg.raw_nid ? u64_to_hex(msg.raw_nid, 8) : "") << '\t'
+      << std::dec << (unsigned int)msg.bch_errors  << '\t'
+      << (msg.tsbk_crc ? u64_to_hex(msg.tsbk_crc, 2) : "") << '\t'
+      << (unsigned int)msg.ss_count << '\t'
+      << msg.status_dibits;
   return rec.str();
 }

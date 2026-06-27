@@ -416,7 +416,26 @@ std::vector<TrunkMessage> P25Parser::decode_tsbk(boost::dynamic_bitset<> &tsbk, 
 
   // ISP (Radio→FNE): PI bit (bit 6 of byte 0) set — route before OSP chain to
   // avoid collisions where ISP and OSP share the same 6-bit opcode value.
+  unsigned long lb = bitset_shift_mask(tsbk, 95, 0x01);
   unsigned long pi = bitset_shift_mask(tsbk, 94, 0x01);
+
+  // Apply structured {OSP/ISP:[FS][NAC][DUID]}{TSBK:[LB][PF][Opcode][MFID] inner} wrapper
+  // Called just before every return in this function.
+  auto apply_tsbk_wrapper = [&]() {
+    for (auto &m : messages) {
+      std::ostringstream hdr;
+      hdr << std::hex << std::setfill('0')
+          << (pi ? "{ISP:" : "{OSP:")
+          << "[FS=0x5575F5FF77FF][NAC=0x" << std::setw(3) << nac
+          << "][DUID=0x07]}{TSBK:[LB=" << std::dec << lb
+          << "][PF=" << pi
+          << "][Opcode=0x" << std::hex << std::setw(2) << m.opcode
+          << "][MFID=0x" << std::setw(2) << m.mfid
+          << "]" << m.meta << "}";
+      m.meta = hdr.str();
+    }
+  };
+
   if (pi) {
     message.direction = DIR_ISP;
     message.opcode    = 0x40 | opcode; // PI-extended for TSV logging (matches op25 convention)
@@ -528,6 +547,7 @@ std::vector<TrunkMessage> P25Parser::decode_tsbk(boost::dynamic_bitset<> &tsbk, 
       message.meta = ms.str();
     }
     messages.push_back(message);
+    apply_tsbk_wrapper();
     return messages;
   }
 
@@ -1209,33 +1229,53 @@ std::vector<TrunkMessage> P25Parser::decode_tsbk(boost::dynamic_bitset<> &tsbk, 
     os << "tsbk39 secondary cc: rfid " << std::dec << rfid << " stid " << stid << " ch1 " << channel_to_string(ch1, sys_num) << "(" << channel_id_to_freq_string(ch1, sys_num) << ") ch2 " << channel_to_string(ch2, sys_num) << "(" << channel_id_to_freq_string(ch2, sys_num) << ") ";
     message.meta = os.str();
     BOOST_LOG_TRIVIAL(debug) << os.str();
-  } else if (opcode == 0x3a) { // rfss status
-    unsigned long syid = bitset_shift_mask(tsbk, 56, 0xfff);
-    unsigned long rfid = bitset_shift_mask(tsbk, 48, 0xff);
-    unsigned long stid = bitset_shift_mask(tsbk, 40, 0xff);
-    unsigned long chan = bitset_shift_mask(tsbk, 24, 0xffff);
+  } else if (opcode == 0x3a) { // rfss status broadcast
+    unsigned long lra         = bitset_shift_mask(tsbk, 72, 0xff);
+    unsigned long syid        = bitset_shift_mask(tsbk, 56, 0xfff);
+    unsigned long rfid        = bitset_shift_mask(tsbk, 48, 0xff);
+    unsigned long stid        = bitset_shift_mask(tsbk, 40, 0xff);
+    unsigned long chan         = bitset_shift_mask(tsbk, 24, 0xffff);
+    unsigned long sysservices = bitset_shift_mask(tsbk, 16, 0xff);
+    unsigned long ch_iden     = (chan >> 12) & 0xf;
+    unsigned long ch_no       = chan & 0xfff;
     message.message_type = SYSID;
     message.sys_id = syid;
     message.sys_rfss = rfid;
     message.sys_site_id = stid;
-    os << "tsbk3a rfss status: syid: " << syid << " rfid " << rfid << " stid " << stid << " ch1 " << channel_to_string(chan, sys_num) << "(" << channel_id_to_freq_string(chan, sys_num) << ")";
+    os << std::hex << std::setfill('0')
+       << "[LRA=0x" << std::setw(2) << lra
+       << "][SysID=0x" << std::setw(3) << syid
+       << "][RFSS_ID=0x" << std::setw(2) << rfid
+       << "][Site_ID=0x" << std::setw(2) << stid
+       << "][Ch_ID=0x" << ch_iden
+       << "][Ch_No=0x" << std::setw(3) << ch_no
+       << "][SysSvc=0x" << std::setw(2) << sysservices
+       << "]";
     message.meta = os.str();
-    BOOST_LOG_TRIVIAL(debug) << os.str();
-  } else if (opcode == 0x3b) { // network status
-    unsigned long wacn = bitset_shift_mask(tsbk, 52, 0xfffff);
-    unsigned long syid = bitset_shift_mask(tsbk, 40, 0xfff);
-    unsigned long ch1 = bitset_shift_mask(tsbk, 24, 0xffff);
-    unsigned long f1 = channel_id_to_frequency(ch1, sys_num);
-
+    BOOST_LOG_TRIVIAL(debug) << "tsbk3a " << os.str();
+  } else if (opcode == 0x3b) { // network status broadcast
+    unsigned long lra         = bitset_shift_mask(tsbk, 72, 0xff);
+    unsigned long wacn        = bitset_shift_mask(tsbk, 52, 0xfffff);
+    unsigned long syid        = bitset_shift_mask(tsbk, 40, 0xfff);
+    unsigned long chan         = bitset_shift_mask(tsbk, 24, 0xffff);
+    unsigned long sysservices = bitset_shift_mask(tsbk, 16, 0xff);
+    unsigned long ch_iden     = (chan >> 12) & 0xf;
+    unsigned long ch_no       = chan & 0xfff;
+    unsigned long f1 = channel_id_to_frequency(chan, sys_num);
     if (f1) {
       message.message_type = STATUS;
       message.wacn = wacn;
       message.sys_id = syid;
       message.freq = f1;
     }
-    os << "net_sts wacn=0x" << std::hex << std::setfill('0') << std::setw(5) << wacn
-       << " syid=0x" << std::setw(3) << syid
-       << " ch1=" << channel_to_string(ch1, sys_num) << "(" << channel_id_to_freq_string(ch1, sys_num) << ")";
+    os << std::hex << std::setfill('0')
+       << "[LRA=0x" << std::setw(2) << lra
+       << "][WACN=0x" << std::setw(5) << wacn
+       << "][SysID=0x" << std::setw(3) << syid
+       << "][Ch_ID=0x" << ch_iden
+       << "][Ch_No=0x" << std::setw(3) << ch_no
+       << "][SysSvc=0x" << std::setw(2) << sysservices
+       << "]";
     message.meta = os.str();
     BOOST_LOG_TRIVIAL(debug) << "tsbk3b " << os.str();
   } else if (opcode == 0x3c) { // adjacent status
@@ -1299,6 +1339,7 @@ std::vector<TrunkMessage> P25Parser::decode_tsbk(boost::dynamic_bitset<> &tsbk, 
     message.raw_frame = raw.str();
     message.meta = "unknown_tsbk op=0x" + [&]{ std::ostringstream s; s << std::hex << opcode; return s.str(); }();
     messages.push_back(message);
+    apply_tsbk_wrapper();
     return messages;
   }
   // Populate raw_frame for every frame that didn't already set it — covers both
@@ -1323,6 +1364,7 @@ std::vector<TrunkMessage> P25Parser::decode_tsbk(boost::dynamic_bitset<> &tsbk, 
     }
   }
   messages.push_back(message);
+  apply_tsbk_wrapper();
   return messages;
 }
 
@@ -1426,6 +1468,36 @@ std::vector<TrunkMessage> P25Parser::parse_message(gr::message::sptr msg, System
   }
   s = s.substr(2);
 
+  // Parse and strip the fixed 27-byte raw frame metadata trailer appended by op25 send_msg().
+  // Format: [0xFD][raw_fs:6BE][raw_nid:8BE][bch_errors:1][crc16:2][ss_count:1][ss_dibits:8]
+  uint64_t rm_raw_fs = 0, rm_raw_nid = 0;
+  uint8_t  rm_bch_errors = 0, rm_ss_count = 0;
+  uint16_t rm_tsbk_crc = 0;
+  std::string rm_status_dibits;
+  bool rm_valid = false;
+  {
+    const size_t TRAILER_SZ = 27;
+    if (s.size() >= TRAILER_SZ && (uint8_t)s[s.size() - TRAILER_SZ] == 0xFD) {
+      size_t tp = s.size() - TRAILER_SZ + 1;
+      for (int i = 0; i < 6; ++i) rm_raw_fs  = (rm_raw_fs  << 8) | (uint8_t)s[tp + i]; tp += 6;
+      for (int i = 0; i < 8; ++i) rm_raw_nid = (rm_raw_nid << 8) | (uint8_t)s[tp + i]; tp += 8;
+      rm_bch_errors = (uint8_t)s[tp++];
+      rm_tsbk_crc   = ((uint16_t)(uint8_t)s[tp] << 8) | (uint8_t)s[tp+1]; tp += 2;
+      rm_ss_count   = std::min((uint8_t)s[tp++], (uint8_t)8);
+      std::ostringstream ss_hex;
+      ss_hex << std::hex << std::setfill('0');
+      for (int i = 0; i < rm_ss_count; ++i) ss_hex << std::setw(2) << (unsigned int)(uint8_t)s[tp + i];
+      rm_status_dibits = ss_hex.str();
+      rm_valid = true;
+      s = s.substr(0, s.size() - TRAILER_SZ);
+    }
+  }
+  auto apply_raw_meta = [&](TrunkMessage &m) {
+    if (!rm_valid) return;
+    m.raw_fs = rm_raw_fs;  m.raw_nid = rm_raw_nid;  m.bch_errors = rm_bch_errors;
+    m.tsbk_crc = rm_tsbk_crc;  m.ss_count = rm_ss_count;  m.status_dibits = rm_status_dibits;
+  };
+
   BOOST_LOG_TRIVIAL(trace) << std::hex << "nac " << nac << std::dec << " type " << type << " size " << msg->to_string().length() << " mesg len: " << msg->length();
   // //" at %f state %d len %d" %(nac, type, time.time(), self.state, len(s))
   if ((type != 7) && (type != 12)) // and nac not in self.trunked_systems:
@@ -1460,7 +1532,7 @@ std::vector<TrunkMessage> P25Parser::parse_message(gr::message::sptr msg, System
     b <<= 16; // for missing crc
 
     messages = decode_tsbk(b, nac, sys_num);
-    { std::string fhex = bytes_to_hex(s); for (auto &m : messages) { m.duid = 0x07; m.frame_hex = fhex; } }
+    { std::string fhex = bytes_to_hex(s); for (auto &m : messages) { m.duid = 0x07; m.frame_hex = fhex; apply_raw_meta(m); } }
     log_with_freq(messages, system, 7, fallback_freq);
     return messages;
   } else if (type == 12) { // # trunk: MBT
@@ -1507,7 +1579,7 @@ std::vector<TrunkMessage> P25Parser::parse_message(gr::message::sptr msg, System
     BOOST_LOG_TRIVIAL(debug) <<  "MBT Header: " <<  header;
     BOOST_LOG_TRIVIAL(debug) <<  "MBT  Data   " <<  mbt_data; */
     messages = decode_mbt_data(opcode, header, mbt_data, link_id, nac, sys_num);
-    { std::string fhex = bytes_to_hex(s); for (auto &m : messages) { m.duid = 0x0c; m.frame_hex = fhex; } }
+    { std::string fhex = bytes_to_hex(s); for (auto &m : messages) { m.duid = 0x0c; m.frame_hex = fhex; apply_raw_meta(m); } }
     log_with_freq(messages, system, 12, fallback_freq);
     return messages;
   } else if (type == 15) { // TDULC — Terminator Data Unit with Link Control (DUID 0x0F)
@@ -1528,6 +1600,7 @@ std::vector<TrunkMessage> P25Parser::parse_message(gr::message::sptr msg, System
       message.meta = "tdulc_event";
     }
     message.frame_hex = bytes_to_hex(s, std::min(s.size(), (size_t)12));
+    apply_raw_meta(message);
     messages.push_back(message);
     log_with_freq(messages, system, 15, fallback_freq);
     return messages;
@@ -1573,6 +1646,14 @@ std::vector<TrunkMessage> P25Parser::parse_message(gr::message::sptr msg, System
       message.meta      = message.raw_frame;
       // 12 bytes: MI(9) + algid(1) + keyid_hi(1) + keyid_lo(1); FEC marker at s[12] when present
       message.frame_hex = bytes_to_hex(s, 12);
+      {
+        std::ostringstream hdr;
+        hdr << "{OSP:[FS=0x5575F5FF77FF][NAC=0x" << std::hex << std::setfill('0') << std::setw(3) << (unsigned long)nac
+            << "][DUID=0x0a]}{ESS:[AlgID=0x" << std::setw(2) << (unsigned int)algid
+            << "][KeyID=0x" << std::setw(4) << keyid
+            << "]" << message.meta << "}";
+        message.meta = hdr.str();
+      }
     } else if (s.length() >= 9) { // LCW from LDU1 or TDULC
       if (s.length() > 10 && (uint8_t)s[10] == 0xFE) message.fec = s.substr(11);
       uint8_t source_duid = (s.length() >= 10) ? (uint8_t)s[9] : 0x05;
@@ -1587,14 +1668,74 @@ std::vector<TrunkMessage> P25Parser::parse_message(gr::message::sptr msg, System
 
       if (pb == 0) { // only decode fields for unencrypted LCWs
         if (sf == 0) { // explicit MFID format
-          if (lco == 0x00) { // Group Voice Channel User
-            message.talkgroup = ((uint8_t)s[4] << 8) | (uint8_t)s[5];
-            message.source    = ((uint8_t)s[6] << 16) | ((uint8_t)s[7] << 8) | (uint8_t)s[8];
-            message.message_type = GRANT;
-          } else if (lco == 0x03) { // Unit to Unit Voice Channel User
-            message.source    = ((uint8_t)s[3] << 16) | ((uint8_t)s[4] << 8) | (uint8_t)s[5];
-            message.talkgroup = ((uint8_t)s[6] << 16) | ((uint8_t)s[7] << 8) | (uint8_t)s[8];
-            message.message_type = UU_V_GRANT;
+          if (message.mfid == 0x90) { // Motorola proprietary: +2..+4=payload, +5=FLAGS, +6..+7=payload, +8=CRC
+            uint8_t  flags    = (uint8_t)s[5]; // +5 = FLAGS
+            uint8_t  crc_byte = (uint8_t)s[8]; // +8 = CRC/protected
+            switch (lco) {
+              case 0x15: { // Motorola Call Termination — TGID at +2:+3, call_type at +4, call_handle at +7:+8
+                message.talkgroup    = ((uint8_t)s[2] << 8) | (uint8_t)s[3];
+                uint8_t  call_type   = (uint8_t)s[4];
+                uint16_t call_handle = ((uint8_t)s[7] << 8) | (uint8_t)s[8];
+                message.message_type = TDULC;
+                std::ostringstream m;
+                m << "mot_call_term tgid=" << std::dec << message.talkgroup
+                  << " call_type=0x" << std::hex << std::setfill('0') << std::setw(2) << (unsigned)call_type
+                  << " flags=0x" << std::setw(2) << (unsigned)flags
+                  << " call_handle=0x" << std::setw(4) << call_handle
+                  << " crc=0x" << std::setw(2) << (unsigned)crc_byte;
+                message.meta = m.str();
+                break;
+              }
+              case 0x17: { // Motorola multi-part call data (5-segment call record): +2=seq, +3:+4=payA, +5=FLAGS, +6:+7=payB, +8=CRC
+                uint8_t seq_num = (uint8_t)s[2];
+                std::ostringstream m;
+                m << "mot_call_data seq=" << std::dec << (unsigned)seq_num
+                  << " flags=0x" << std::hex << std::setfill('0') << std::setw(2) << (unsigned)flags
+                  << " payload_a=" << std::setw(2) << (unsigned)(uint8_t)s[3]
+                  << std::setw(2) << (unsigned)(uint8_t)s[4]
+                  << " payload_b=" << std::setw(2) << (unsigned)(uint8_t)s[6]
+                  << std::setw(2) << (unsigned)(uint8_t)s[7]
+                  << " crc=0x" << std::setw(2) << (unsigned)crc_byte;
+                message.meta = m.str();
+                break;
+              }
+              case 0x05: { // Motorola UU_ANS_REQ: +2:+4=payA, +5=FLAGS, +6:+7=payB, +8=CRC
+                std::ostringstream m;
+                m << "mot_uu_ans_req"
+                  << " flags=0x" << std::hex << std::setfill('0') << std::setw(2) << (unsigned)flags
+                  << " payload_a=" << std::setw(2) << (unsigned)(uint8_t)s[2]
+                  << std::setw(2) << (unsigned)(uint8_t)s[3]
+                  << std::setw(2) << (unsigned)(uint8_t)s[4]
+                  << " payload_b=" << std::setw(2) << (unsigned)(uint8_t)s[6]
+                  << std::setw(2) << (unsigned)(uint8_t)s[7]
+                  << " crc=0x" << std::setw(2) << (unsigned)crc_byte;
+                message.meta = m.str();
+                break;
+              }
+              default: { // Generic Motorola LCW: log payload and CRC by position
+                std::ostringstream m;
+                m << "mot_lcw"
+                  << " flags=0x" << std::hex << std::setfill('0') << std::setw(2) << (unsigned)flags
+                  << " payload=" << std::setw(2) << (unsigned)(uint8_t)s[2]
+                  << std::setw(2) << (unsigned)(uint8_t)s[3]
+                  << std::setw(2) << (unsigned)(uint8_t)s[4]
+                  << std::setw(2) << (unsigned)(uint8_t)s[6]
+                  << std::setw(2) << (unsigned)(uint8_t)s[7]
+                  << " crc=0x" << std::setw(2) << (unsigned)crc_byte;
+                message.meta = m.str();
+                break;
+              }
+            }
+          } else { // Standard MFID (0x00, 0x01, etc.) — TIA-102 byte layout
+            if (lco == 0x00) { // Group Voice Channel User: +2=reserved, +3=svc_opts, +4:+5=TGID, +6:+8=srcaddr
+              message.talkgroup    = ((uint8_t)s[4] << 8) | (uint8_t)s[5];
+              message.source       = ((uint8_t)s[6] << 16) | ((uint8_t)s[7] << 8) | (uint8_t)s[8];
+              message.message_type = GRANT;
+            } else if (lco == 0x03) { // Unit to Unit Voice Channel User: +3:+5=srcaddr, +6:+8=dstaddr
+              message.source       = ((uint8_t)s[3] << 16) | ((uint8_t)s[4] << 8) | (uint8_t)s[5];
+              message.talkgroup    = ((uint8_t)s[6] << 16) | ((uint8_t)s[7] << 8) | (uint8_t)s[8];
+              message.message_type = UU_V_GRANT;
+            }
           }
         } else { // SF=1: abbreviated format, no MFID, s[1..8] are all payload
           if (lco == 0x02) { // Group Voice Channel Update (abbreviated)
@@ -1639,49 +1780,78 @@ std::vector<TrunkMessage> P25Parser::parse_message(gr::message::sptr msg, System
           } else if (lco == 0x0f) { // Call Termination / Cancellation — per op25 trunking.py pb_sf_lco==0x4f
             unsigned long sa = ((uint8_t)s[6] << 16) | ((uint8_t)s[7] << 8) | (uint8_t)s[8];
             message.source = sa;
+            message.message_type = TDULC;
             std::ostringstream m;
             m << "call_term_cancel wuid=" << std::dec << sa;
             message.meta = m.str();
-          } else if (lco == 0x23) { // RFSS Status Broadcast (abbreviated)
-            // s[1]      = LMC (Link Modification Control)
-            // s[2][7:4] = RFSS_ID[3:0], s[2][3:0]+s[3] = SYS_ID[11:0]
-            // s[4]      = SSN / RFSS status
-            // s[5]      = SITE_ID[7:0]
-            // s[6][7:4] = CC_CHAN_ID, s[6][3:0]+s[7] = CC_CHAN_NUM[11:0]
-            // s[8]      = SYSSERVICES
+          } else if (lco == 0x23) { // RFSS Status Broadcast (abbreviated, SF=1)
+            // Per TIA-102.AABC: abbreviated form omits explicit MFID; byte layout:
+            // s[1]          = LMC (Link Modification Control)
+            // s[2][7:4]     = RFSS_ID[3:0]
+            // s[2][3:0]+s[3] = SYS_ID[11:0]
+            // s[4][7:4]     = reserved
+            // s[4][3:0]     = SSN (System Status Number — 4-bit sequence counter)
+            // s[5]          = SITE_ID[7:0]
+            // s[6][7:4]     = CC_CHAN_ID (identifier table index)
+            // s[6][3:0]+s[7] = CC_CHAN_NUM[11:0]
+            // s[8]          = SYSSERVICES
+            uint8_t  lmc         = (uint8_t)s[1];
+            uint8_t  ssn         = (uint8_t)s[4] & 0x0f;
             message.sys_rfss    = ((uint8_t)s[2] >> 4) & 0x0f;
             message.sys_id      = (((uint8_t)s[2] & 0x0f) << 8) | (uint8_t)s[3];
             message.sys_site_id = (uint8_t)s[5];
-            uint8_t  cc_iden     = ((uint8_t)s[6] >> 4) & 0x0f;
-            uint16_t cc_chan     = (((uint8_t)s[6] & 0x0f) << 8) | (uint8_t)s[7];
+            uint8_t  cc_iden    = ((uint8_t)s[6] >> 4) & 0x0f;
+            uint16_t cc_chan    = (((uint8_t)s[6] & 0x0f) << 8) | (uint8_t)s[7];
             uint8_t  sysservices = (uint8_t)s[8];
             message.message_type = SYSID;
             std::ostringstream m;
-            m << "rfss_sts rfss_id=" << message.sys_rfss
-              << " sys_id=0x" << std::hex << std::setfill('0') << std::setw(3) << message.sys_id
-              << " site_id=" << std::dec << message.sys_site_id
-              << " cc_iden=" << (unsigned int)cc_iden
-              << " cc_chan=" << cc_chan
+            m << "rfss_sts"
+              << " lmc=0x"       << std::hex << std::setfill('0') << std::setw(2) << (unsigned int)lmc
+              << " rfss_id="     << std::dec << message.sys_rfss
+              << " sys_id=0x"    << std::hex << std::setfill('0') << std::setw(3) << message.sys_id
+              << " ssn="         << std::dec << (unsigned int)ssn
+              << " site_id="     << message.sys_site_id
+              << " cc_iden="     << (unsigned int)cc_iden
+              << " cc_chan="     << cc_chan
               << " sysservices=0x" << std::hex << std::setw(2) << (unsigned int)sysservices;
             message.meta = m.str();
           }
         }
       }
 
-      std::ostringstream raw;
-      raw << "lcw duid=0x" << std::hex << std::setfill('0') << std::setw(2) << (unsigned int)source_duid
-          << " lco=0x" << std::setw(2) << (unsigned int)lco
-          << " sf=" << (unsigned int)sf
-          << " pb=" << (unsigned int)pb
-          << " bytes=";
-      for (size_t i = 0; i < 9; i++)
-        raw << std::setw(2) << (unsigned int)(uint8_t)s[i];
-      message.raw_frame = raw.str();
-      if (message.message_type == UNKNOWN)
-        message.meta = message.raw_frame;
-      // 10 bytes: 9 LCW payload + source_duid; FEC marker at s[10] when present
+      // Populate raw_frame for UNKNOWN frames; for Motorola frames with structured meta
+      // already set, preserve the structured content and only add raw_frame alongside.
+      if (message.message_type == UNKNOWN) {
+        std::ostringstream raw;
+        raw << "lcw duid=0x" << std::hex << std::setfill('0') << std::setw(2) << (unsigned int)source_duid
+            << " lco=0x" << std::setw(2) << (unsigned int)lco
+            << " sf=" << (unsigned int)sf
+            << " pb=" << (unsigned int)pb
+            << " bytes=";
+        for (size_t i = 0; i < 9; i++)
+          raw << std::setw(2) << (unsigned int)(uint8_t)s[i];
+        message.raw_frame = raw.str();
+        if (message.meta.empty()) // only use raw bytes as meta when no structured meta was set
+          message.meta = message.raw_frame;
+      }
+      // frame_hex: 10 bytes = 9 LCW payload + source_duid (all frames, all LCOs)
       message.frame_hex = bytes_to_hex(s, std::min(s.size(), (size_t)10));
+      {
+        std::ostringstream hdr;
+        hdr << "{OSP:[FS=0x5575F5FF77FF][NAC=0x" << std::hex << std::setfill('0') << std::setw(3) << (unsigned long)nac
+            << "][DUID=0x" << std::setw(2) << (unsigned int)source_duid
+            << "]}{LCW:[PB=" << std::dec << (unsigned int)pb
+            << "][SF=" << (unsigned int)sf
+            << "][LCO=0x" << std::hex << std::setw(2) << (unsigned int)lco;
+        if (sf == 0) // explicit MFID — always include it in the header
+          hdr << "][MFID=0x" << std::setw(2) << (unsigned int)message.mfid;
+        if (sf == 0 && message.mfid == 0x90) // Motorola: also log the FLAGS byte (+5)
+          hdr << "][FLAGS=0x" << std::setw(2) << (unsigned int)(uint8_t)s[5];
+        hdr << "]" << message.meta << "}";
+        message.meta = hdr.str();
+      }
     }
+    apply_raw_meta(message);
     messages.push_back(message);
     log_with_freq(messages, system, 19, fallback_freq);
     return messages;
@@ -1702,6 +1872,7 @@ std::vector<TrunkMessage> P25Parser::parse_message(gr::message::sptr msg, System
       message.frame_hex = bytes_to_hex(s);
     }
     message.message_type = UNKNOWN;
+    apply_raw_meta(message);
     messages.push_back(message);
     log_with_freq(messages, system, 18, fallback_freq);
     return messages;
@@ -1772,6 +1943,7 @@ std::vector<TrunkMessage> P25Parser::parse_message(gr::message::sptr msg, System
       message.frame_hex = bytes_to_hex(s, hex_end);
     }
     message.message_type = UNKNOWN;
+    apply_raw_meta(message);
     messages.push_back(message);
     log_with_freq(messages, system, 20, fallback_freq);
     return messages;
@@ -1807,8 +1979,19 @@ std::vector<TrunkMessage> P25Parser::parse_message(gr::message::sptr msg, System
       message.meta      = message.raw_frame;
       // 15 bytes: MI(9)+MFID(1)+algid(1)+keyid(2)+tgid(2); FEC marker at s[15] when present
       message.frame_hex = bytes_to_hex(s, 15);
+      {
+        std::ostringstream hdr;
+        hdr << "{OSP:[FS=0x5575F5FF77FF][NAC=0x" << std::hex << std::setfill('0') << std::setw(3) << (unsigned long)nac
+            << "][DUID=0x00]}{HDU:[MFID=0x" << std::setw(2) << (unsigned int)mfid
+            << "][AlgID=0x" << std::setw(2) << (unsigned int)algid
+            << "][KeyID=0x" << std::setw(4) << keyid
+            << "][TGID=" << std::dec << tgid
+            << "]" << message.meta << "}";
+        message.meta = hdr.str();
+      }
     }
     message.message_type = UNKNOWN;
+    apply_raw_meta(message);
     messages.push_back(message);
     log_with_freq(messages, system, 22, fallback_freq);
     return messages;

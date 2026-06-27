@@ -69,6 +69,12 @@ struct TrunkMessage {
   std::string pre_fec_bits;      // hex-packed raw pre-FEC bv34 bits (196 bits/block, MSB-first); RAW_PDU only
   std::string frame_hex;         // post-FEC frame payload bytes as lowercase hex (no spaces, no prefix)
   double recv_freq = 0.0;        // always the tuned channel frequency, never overridden by payload
+  uint64_t raw_fs = 0;           // received 48-bit FS word (P25_FRAME_SYNC_MAGIC = 0x5575F5FF77FF if clean)
+  uint64_t raw_nid = 0;          // received 64-bit NID before BCH correction
+  uint8_t  bch_errors = 0;       // BCH error count in NID decode (0-4)
+  uint16_t tsbk_crc = 0;         // CRC-16 from TSBK block bytes [10:11] (stripped by op25)
+  uint8_t  ss_count = 0;         // number of status dibits captured from RF frame
+  std::string status_dibits;     // hex pairs for each captured status dibit value
 };
 
 class TrunkParser {
