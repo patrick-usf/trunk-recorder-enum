@@ -744,8 +744,16 @@ namespace gr {
                 blks = deinterleave_buf[0][6] & 0x7f;
 
                 if ((sap == 61) && ((fmt == 0x17) || (fmt == 0x15))) { // Multi Block Trunking messages
-                    if ((blks > deinterleave_buf.size()) || (deinterleave_buf.size() == 1))
-                        return; // insufficient blocks available
+                    if (deinterleave_buf.size() == 1) {
+                        // Only the header block decoded (no data blocks) — typical for ISP
+                        // uplink CC captures where data blocks arrive in later timeslots or
+                        // are too weak to decode. Emit the 12-byte header so the parser can
+                        // log at minimum the opcode and source address from fmt=0x17 frames.
+                        process_duid(framer->duid, framer->nac, deinterleave_buf[0].data(), 12);
+                        return;
+                    }
+                    if (blks > deinterleave_buf.size())
+                        return; // data blocks missing
 
                     uint32_t crc1 = crc32(deinterleave_buf[1].data(), ((blks * 12) - 4) * 8);
                     uint32_t crc2 = (deinterleave_buf[blks][8] << 24) + (deinterleave_buf[blks][9] << 16) +
@@ -788,12 +796,7 @@ namespace gr {
                     bit_vector bv34;
                     bv34.reserve(fr_len >> 1);
                     for (unsigned int d = 0; d < fr_len >> 1; d++) {
-                        if (d < 57) {
-                            if ((d+1) % 36 == 0) continue;
-                        } else {
-                            unsigned int block_off = (d - 57) % 101;
-                            if (block_off == 14 || block_off == 50 || block_off == 86) continue;
-                        }
+                        if ((d+1) % 36 == 0) continue;
                         bv34.push_back(fr[d*2]);
                         bv34.push_back(fr[d*2+1]);
                     }
@@ -863,20 +866,12 @@ namespace gr {
             bit_vector bv;
             bv.reserve(fr_len >> 1);
             for (unsigned int d=0; d < fr_len >> 1; d++) {	  // eliminate status bits from frame
-                // Body starts at d=57 (after 24 sync + 33 NID dibits).
-                // Each 101-dibit PDU block has status at block-relative positions 14, 50, 86.
-                // Global period-36 removal drifts -7 dibits/block, corrupting blocks 1+.
-                if (d < 57) {
-                    if ((d+1) % 36 == 0) {
-                        d_pending_status_dibits.push_back((fr[d*2] << 1) | fr[d*2+1]);
-                        continue;
-                    }
-                } else {
-                    unsigned int block_off = (d - 57) % 101;
-                    if (block_off == 14 || block_off == 50 || block_off == 86) {
-                        d_pending_status_dibits.push_back((fr[d*2] << 1) | fr[d*2+1]);
-                        continue;
-                    }
+                // P25 status symbols are at global period-36 positions: every 36th dibit
+                // from frame start ((d+1) % 36 == 0).  This matches the TIA-102 standard
+                // and produces correct trellis decode for TSBK and MBT blocks 1+.
+                if ((d+1) % 36 == 0) {
+                    d_pending_status_dibits.push_back((fr[d*2] << 1) | fr[d*2+1]);
+                    continue;
                 }
                 bv.push_back(fr[d*2]);
                 bv.push_back(fr[d*2+1]);
