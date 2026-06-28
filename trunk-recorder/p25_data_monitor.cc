@@ -90,6 +90,9 @@ static void print_usage(const char *prog) {
             << " [--nac        <hex>]     Expected NAC (e.g. 0x842); frames with other NACs excluded from decoded/known counts\n"
             << " [--qpsk]                 Use CQPSK demodulator instead of C4FM/FSK4 (Phase 1 downlink, 4800 sps)\n"
             << " [--phase2]               Use H-DQPSK demodulator for P25 Phase 2 TDMA (6000 sps); implies --qpsk\n"
+            << " [--more-quiet]           Suppress repeated broadcast frames with identical content\n"
+            << "                          (RFSS_STS, NET_STS, ADJ_STS, IDEN_UP, SCCB, Motorola system-info);\n"
+            << "                          each unique (opcode+content) pair logged once; grants/registrations unaffected\n"
             << " [--baseband-sink <dir>]  Write 48 kHz f32 FM-demod audio to named FIFOs in <dir>\n"
             << "                          for pdu_harness (p25.rs MessageReceiver). FIFOs are named\n"
             << "                          p25_dl_<freq_hz>.f32 and are created automatically via mkfifo.\n";
@@ -116,6 +119,7 @@ int main(int argc, char **argv) {
   unsigned long       filter_nac = 0; // 0 = accept any non-zero NAC
   bool                use_qpsk   = false;
   bool                use_phase2 = false;
+  bool                use_quiet  = false;
   std::string         sink_dir;
 
   static const struct option long_opts[] = {
@@ -130,11 +134,12 @@ int main(int argc, char **argv) {
     { "qpsk",          no_argument,       0, 'q' },
     { "phase2",        no_argument,       0, 'P' },
     { "baseband-sink", required_argument, 0, 'b' },
+    { "more-quiet",    no_argument,       0, 'Q' },
     { 0, 0, 0, 0 }
   };
 
   int opt, idx;
-  while ((opt = getopt_long(argc, argv, "z:c:r:f:l:n:t:a:qPb:", long_opts, &idx)) != -1) {
+  while ((opt = getopt_long(argc, argv, "z:c:r:f:l:n:t:a:qPb:Q", long_opts, &idx)) != -1) {
     switch (opt) {
       case 'z': zmq_addr        = optarg;                      break;
       case 'c': sdr_center      = std::stod(optarg);           break;
@@ -147,6 +152,7 @@ int main(int argc, char **argv) {
       case 'q': use_qpsk        = true;                        break;
       case 'P': use_phase2      = true; use_qpsk = true;       break;
       case 'b': sink_dir        = optarg;                      break;
+      case 'Q': use_quiet       = true;                        break;
       default:
         print_usage(argv[0]);
         return 1;
@@ -168,6 +174,10 @@ int main(int argc, char **argv) {
     std::cerr << "[p25-data-monitor] ERROR: cannot open log file: " << log_path << "\n";
     delete sys;
     return 1;
+  }
+  if (use_quiet) {
+    P25FrameLogger::instance().set_quiet_mode(true);
+    std::cerr << "[p25-data-monitor] quiet mode enabled: broadcast duplicates suppressed\n";
   }
 
   // ── Build GR flowgraph ──────────────────────────────────────────────────

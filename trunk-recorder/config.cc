@@ -190,6 +190,10 @@ bool load_config(string config_file, Config &config, gr::top_block_sptr &tb, std
     if (!config.control_frame_log.empty()) {
       BOOST_LOG_TRIVIAL(info) << "Control Frame Log: " << config.control_frame_log;
     }
+    config.control_frame_log_quiet = data.value("controlFrameLogQuiet", false);
+    if (config.control_frame_log_quiet) {
+      BOOST_LOG_TRIVIAL(info) << "Control Frame Log quiet mode enabled";
+    }
     config.default_mode = data.value("defaultMode", "digital");
     BOOST_LOG_TRIVIAL(info) << "Default Mode: " << config.default_mode;
     config.call_timeout = data.value("callTimeout", 3.0);

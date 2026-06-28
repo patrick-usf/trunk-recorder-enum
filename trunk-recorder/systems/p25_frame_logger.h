@@ -2,6 +2,7 @@
 #include <fstream>
 #include <mutex>
 #include <string>
+#include <unordered_set>
 #include <vector>
 #include "parser.h"
 #include "system.h"
@@ -20,6 +21,15 @@ public:
   // GNURadio message type: 7=TSBK, 12=MBT/PDU, 18=Phase2 MAC PDU, 20=raw non-MBT PDU.
   void log_messages(const std::vector<TrunkMessage> &messages, System *system, int frame_type);
 
+  // Quiet mode: suppress repeated writes of static broadcast opcodes (RFSS_STS,
+  // NET_STS, ADJ_STS, IDEN_UP, SCCB, etc.). Each unique (opcode + meta content)
+  // pair is written only once; identical repeats are silently dropped. Content
+  // changes (e.g. CC failover) are logged because they produce a new unique key.
+  // The seen-set is cleared on every file roll so each new file captures the
+  // current broadcast state. Grants, registrations, data, and unknown frames
+  // are never suppressed regardless of quiet mode.
+  void set_quiet_mode(bool enable);
+
 private:
   P25FrameLogger() = default;
   ~P25FrameLogger();
@@ -37,9 +47,17 @@ private:
   std::string ts_now() const;
   std::string ts_file_suffix() const; // UTC timestamp string safe for filenames
 
+  // Returns true for opcodes that broadcast static site/system information and
+  // repeat with identical content many times per minute on the control channel.
+  static bool is_broadcast_opcode(unsigned long opcode, unsigned long mfid, int frame_type);
+
   std::ofstream    log_file_;
   std::string      base_path_;    // original configured path
   std::uintmax_t   max_bytes_{50ULL * 1024 * 1024};
   std::uintmax_t   bytes_written_{0};
   mutable std::mutex mtx_;
+
+  // quiet-mode state (guarded by mtx_)
+  bool quiet_mode_{false};
+  std::unordered_set<std::string> quiet_seen_; // opcode|mfid|ft|meta keys already written
 };

@@ -804,6 +804,8 @@ int monitor_messages(Config &config, gr::top_block_sptr &tb, std::vector<Source 
   if (!config.control_frame_log.empty()) {
     P25FrameLogger::instance().open(config.control_frame_log);
     BOOST_LOG_TRIVIAL(info) << "P25 frame logger active: " << config.control_frame_log;
+    if (config.control_frame_log_quiet)
+      P25FrameLogger::instance().set_quiet_mode(true);
   }
 
   while (1) {

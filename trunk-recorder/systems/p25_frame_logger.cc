@@ -47,6 +47,11 @@ bool P25FrameLogger::is_open() const {
   return log_file_.is_open();
 }
 
+void P25FrameLogger::set_quiet_mode(bool enable) {
+  std::lock_guard<std::mutex> lock(mtx_);
+  quiet_mode_ = enable;
+}
+
 void P25FrameLogger::log_messages(const std::vector<TrunkMessage> &messages,
                                   System *system, int frame_type) {
   if (messages.empty())
@@ -57,6 +62,16 @@ void P25FrameLogger::log_messages(const std::vector<TrunkMessage> &messages,
   for (const auto &msg : messages) {
     if (msg.message_type == INVALID_CC_MESSAGE)
       continue;
+    if (quiet_mode_ && is_broadcast_opcode(msg.opcode, msg.mfid, frame_type)) {
+      // Key: opcode + mfid + frame_type + exact meta content.
+      // insert() returns false if key already present → skip duplicate.
+      std::string key = std::to_string(msg.opcode) + "|"
+                      + std::to_string(msg.mfid)   + "|"
+                      + std::to_string(frame_type)  + "|"
+                      + msg.meta;
+      if (!quiet_seen_.insert(key).second)
+        continue;
+    }
     std::string rec = format_record(msg, system, frame_type) + '\n';
     log_file_ << rec;
     bytes_written_ += rec.size();
@@ -109,12 +124,66 @@ void P25FrameLogger::roll() {
   }
 
   bytes_written_ = 0;
+  quiet_seen_.clear(); // new file gets a fresh broadcast state snapshot
   open_file();
 }
 
 void P25FrameLogger::check_roll() {
   if (bytes_written_ >= max_bytes_)
     roll();
+}
+
+// static
+bool P25FrameLogger::is_broadcast_opcode(unsigned long opcode, unsigned long mfid,
+                                         int frame_type) {
+  // Standard TSBK (frame_type 7, mfid 0x00) site/system broadcast opcodes.
+  // These repeat with identical content many times per minute on the CC.
+  if (frame_type == 7 && mfid == 0x00) {
+    switch (opcode) {
+      case 0x30: // TDMA_SYNC_BCAST
+      case 0x33: // IDEN_UP_TDMA
+      case 0x34: // IDEN_UP_VU
+      case 0x35: // TIME_DATE_ANNOUNCE
+      case 0x38: // SYS_SVC_BCAST
+      case 0x39: // SCCB (secondary CC broadcast)
+      case 0x3a: // RFSS_STS_BCAST
+      case 0x3b: // NET_STS_BCAST
+      case 0x3c: // ADJ_STS_BCAST
+      case 0x3d: // IDEN_UP
+      case 0x3e: // PROTECTED_SITE_DATA
+        return true;
+      default: return false;
+    }
+  }
+  // Motorola TSBK broadcasts (mfid 0x90) — vendor system-info rotations.
+  if (frame_type == 7 && mfid == 0x90) {
+    switch (opcode) {
+      case 0x05: // MOT_OSP_TRAFFIC_CH_ID
+      case 0x09: // MOT_OSP_SYSTEM_LOADING
+      case 0x0b: // MOT_UNKNOWN_0B
+      case 0x16: // MOT_UNKNOWN_16
+        return true;
+      default: return false;
+    }
+  }
+  // LCW/ESS in-call broadcasts (frame_type 19) — every voice frame carries these.
+  if (frame_type == 19) {
+    switch (opcode) {
+      case 0x1c: // LCW_RFSS_STS_BCAST
+      case 0x1d: // LCW_NET_STS_BCAST
+      case 0x23: // LCW_RFSS_STS_BCAST_IMP (abbreviated, implicit MFID)
+      case 0x30: // LCW_TDMA_SYNC_BCAST
+      case 0x34: // LCW_IDEN_UP_TDMA
+      case 0x35: // LCW_TIME_DATE_ANNOUNCE
+      case 0x39: // LCW_SEC_RFSS_BCAST
+      case 0x3a: // LCW_ADJ_STS_BCAST
+      case 0x3b: // LCW_NET_STS_BCAST_EXP
+      case 0x3d: // LCW_IDEN_UP
+        return true;
+      default: return false;
+    }
+  }
+  return false;
 }
 
 void P25FrameLogger::write_header() {
@@ -171,6 +240,7 @@ std::string P25FrameLogger::decode_status(const TrunkMessage &msg) const {
 
 std::string P25FrameLogger::opcode_name(unsigned long opcode, unsigned long mfid,
                                         int frame_type) const {
+  if (frame_type == 21) return ""; // M_P25_RAW_FRAME — no opcode; suppress TSBK_UNKNOWN
   if (frame_type == 19) { // LCW or ESS (type 19 carries both)
     // ESS frames carry algid in the opcode field; all standard algids are > 0x3f
     // (outside the valid 6-bit LCCO range), so this check is unambiguous.
@@ -228,6 +298,13 @@ std::string P25FrameLogger::opcode_name(unsigned long opcode, unsigned long mfid
       case 0x00: return "MBT_GRP_V_CH_GRANT";
       case 0x04: return "MBT_UU_V_CH_GRANT";
       case 0x28: return "MBT_GRP_AFF_RSP";
+      case 0x3a: return "MBT_RFSS_STS_BCAST";
+      case 0x3b: return "MBT_NET_STS_BCAST";
+      case 0x3c: return "MBT_ADJ_STS_BCAST";
+      // ISP MBT opcodes: tagged with bit 6 by decode_mbt_data() to distinguish from OSP
+      case 0x68: return "MBT_ISP_GRP_AFF_REQ";
+      case 0x69: return "MBT_ISP_U_DE_REG_REQ";
+      case 0x6c: return "MBT_ISP_U_REG_REQ";
       default:   return "MBT_UNKNOWN";
     }
   }
@@ -330,6 +407,15 @@ std::string P25FrameLogger::format_record(const TrunkMessage &msg,
     case 18: frame_type_str = "MAC_PDU"; break;
     case 19: frame_type_str = (msg.duid == 0x0a) ? "ESS" : "LCW"; break;
     case 20: frame_type_str = "RAW_PDU"; break;
+    case 21: { // M_P25_RAW_FRAME — use DUID name
+      static const char *n21[] = {
+        "HDU",nullptr,nullptr,"TDU",nullptr,"LDU1",nullptr,"TSBK",
+        nullptr,nullptr,"LDU2",nullptr,"PDU",nullptr,nullptr,"TDULC"
+      };
+      unsigned d = msg.duid & 0x0f;
+      frame_type_str = (d < 16 && n21[d]) ? n21[d] : "RAW";
+      break;
+    }
     case 22: frame_type_str = "HDU";     break;
     default: frame_type_str = std::to_string(frame_type); break;
   }
