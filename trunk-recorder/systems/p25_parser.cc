@@ -1893,20 +1893,91 @@ std::vector<TrunkMessage> P25Parser::parse_message(gr::message::sptr msg, System
       };
       const char *sap_name = (sap < 16) ? sap_names[sap] : "rsvd";
 
+      // Extract all 12-byte PDU header fields
+      uint8_t an_bit    = s.length() >= 1 ? ((uint8_t)s[0] >> 6) & 1 : 0; // acknowledged
+      uint8_t io_bit    = s.length() >= 1 ? ((uint8_t)s[0] >> 5) & 1 : 0; // 1=inbound
+      uint8_t mfid      = s.length() >= 3 ? (uint8_t)s[2] : 0;
+      uint8_t blks      = s.length() >= 7 ? (uint8_t)s[6] & 0x7f : 0;
+      uint8_t fmf_bit   = s.length() >= 7 ? ((uint8_t)s[6] >> 7) & 1 : 0; // final message fragment
+      uint8_t pad_oct   = s.length() >= 8 ? ((uint8_t)s[7] >> 3) & 0x1f : 0;
+      uint8_t data_off  = s.length() >= 10 ? (uint8_t)s[9] & 0x3f : 0;
+      message.mfid = mfid;
+
+      // CRC-CCITT-16 residue check over all 12 header bytes (result==0 means CRC-OK)
+      bool hdr_crc_ok = false;
+      if (s.length() >= 12) {
+        uint32_t poly = (1u<<12)|(1u<<5)|1u, crc = 0;
+        for (int _i = 0; _i < 12; _i++) {
+          uint8_t _b = (uint8_t)s[_i];
+          for (int _j = 7; _j >= 0; _j--) {
+            crc = ((crc << 1) | ((_b >> _j) & 1)) & 0x1ffff;
+            if (crc & 0x10000) crc = (crc & 0xffff) ^ poly;
+          }
+        }
+        hdr_crc_ok = ((crc ^ 0xffff) & 0xffff) == 0;
+      }
+
       std::ostringstream meta;
       meta << "pdu fmt=0x" << std::hex << std::setfill('0') << std::setw(2) << (unsigned)fmt
-           << " sap=" << sap_name << "(0x" << std::setw(2) << (unsigned)sap << ")";
+           << " sap=" << sap_name << "(0x" << std::setw(2) << (unsigned)sap << ")"
+           << " mfid=0x" << std::setw(2) << (unsigned)mfid;
 
       if (s.length() >= 6) {
         uint32_t dst = ((uint8_t)s[3] << 16) | ((uint8_t)s[4] << 8) | (uint8_t)s[5];
         message.source = dst;
         meta << " dst=" << std::dec << dst;
       }
-      if (s.length() >= 7) {
-        uint8_t a_bit = ((uint8_t)s[6] >> 7) & 1;
-        uint8_t blks  = (uint8_t)s[6] & 0x7f;
-        meta << " blks=" << (unsigned)blks;
-        if (a_bit) meta << " last";
+      meta << std::dec
+           << " blks=" << (unsigned)blks
+           << " an=" << (unsigned)an_bit
+           << " io=" << (unsigned)io_bit
+           << " data_off=" << (unsigned)data_off
+           << " pad=" << (unsigned)pad_oct
+           << " hdr_crc=" << (hdr_crc_ok ? "ok" : "BAD");
+      if (fmf_bit) meta << " last";
+
+      // Parse SNDCP header from first data block when block data is present.
+      // Block 1 starts at s[12]; skip data_off bytes, then 2-byte SNDCP header.
+      size_t sndcp_off = 12 + data_off;          // byte offset into s of SNDCP header
+      size_t ip_off    = sndcp_off + 2;           // expected IP start offset
+      if (s.length() > sndcp_off + 1) {
+        uint8_t sc0 = (uint8_t)s[sndcp_off];
+        uint8_t sc1 = (uint8_t)s[sndcp_off + 1];
+        uint8_t sndcp_x    = (sc0 >> 7) & 1;    // 1 = compressed header
+        uint8_t sndcp_t    = (sc0 >> 6) & 1;    // 1 = data PDU (SN-DATA)
+        uint8_t sndcp_m    = (sc0 >> 5) & 1;    // 1 = more segments follow
+        uint8_t sndcp_nsapi = sc0 & 0x1f;
+        meta << " sndcp_x=" << (unsigned)sndcp_x
+             << " sndcp_t=" << (unsigned)sndcp_t
+             << " sndcp_m=" << (unsigned)sndcp_m
+             << " nsapi=" << (unsigned)sndcp_nsapi
+             << " npdu_seq=" << (unsigned)sc1
+             << " ip_off=" << ip_off;
+        // Peek at potential IPv4 header byte to aid verification
+        if (s.length() > ip_off) {
+          uint8_t ip0 = (uint8_t)s[ip_off];
+          meta << " ip0=0x" << std::hex << std::setfill('0') << std::setw(2) << (unsigned)ip0;
+          if ((ip0 >> 4) == 4) {
+            // Log IP total_len and protocol for IPv4
+            if (s.length() > ip_off + 9) {
+              uint16_t ip_len  = ((uint8_t)s[ip_off+2] << 8) | (uint8_t)s[ip_off+3];
+              uint8_t  ip_ttl  = (uint8_t)s[ip_off+8];
+              uint8_t  ip_proto= (uint8_t)s[ip_off+9];
+              meta << std::dec
+                   << " ip_len=" << ip_len
+                   << " ip_ttl=" << (unsigned)ip_ttl
+                   << " ip_proto=" << (unsigned)ip_proto;
+            }
+            // Verify IPv4 header checksum over 20 bytes when available
+            if (s.length() >= ip_off + 20) {
+              uint32_t sum = 0;
+              for (size_t _w = 0; _w < 20; _w += 2)
+                sum += ((uint8_t)s[ip_off+_w] << 8) | (uint8_t)s[ip_off+_w+1];
+              while (sum >> 16) sum = (sum & 0xffff) + (sum >> 16);
+              meta << " ip_crc=" << ((~sum & 0xffff) == 0 ? "ok" : "BAD");
+            }
+          }
+        }
       }
 
       // Scan backward for 0xAB 0xCD fec section marker; exclude from hex dump when found.
