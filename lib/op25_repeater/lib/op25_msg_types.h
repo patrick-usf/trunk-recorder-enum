@@ -48,6 +48,7 @@ static const int16_t M_P25_MAC_END_PTT  = 17;
 static const int16_t M_P25_MAC_PDU      = 18;
 static const int16_t M_P25_FDMA_LCW     = 19;
 static const int16_t M_P25_RAW_PDU      = 20; // non-MBT PDU header block forwarded for frame logging
+static const int16_t M_P25_RAW_FRAME    = 21; // raw frame bits (post-sync, pre-FEC) for all DUIDs — uplink frame capture
 static const int16_t M_P25_HDU          = 22; // HDU crypto header: MI(9) + MFID(1) + algid(1) + keyid(2) + tgid(2)
 
 // DMR Messages

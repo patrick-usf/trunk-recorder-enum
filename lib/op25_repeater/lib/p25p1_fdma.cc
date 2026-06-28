@@ -1065,6 +1065,32 @@ namespace gr {
         }
 
         void p25p1_fdma::process_frame() {
+            // Raw frame hook: emit M_P25_RAW_FRAME for every decoded frame so that
+            // uplink captures can log LDU1/LDU2/HDU/TDU bytes that have no other
+            // raw-byte log path.  Payload = [duid(1)][bits 48..frame_size-1 packed].
+            // Bits 0-47 are the fixed P25 sync pattern (0x5575F5FF77FF); skipping
+            // them keeps the payload compact while still including the full NID+body.
+            if (d_do_msgq && framer->frame_size > 48) {
+                const uint32_t sync_bits = 48;
+                uint32_t payload_bits = framer->frame_size - sync_bits;
+                std::vector<uint8_t> raw;
+                raw.reserve(1 + (payload_bits + 7) / 8);
+                raw.push_back((uint8_t)framer->duid);
+                for (uint32_t i = 0; i + 7 < payload_bits; i += 8) {
+                    uint32_t b = sync_bits + i;
+                    raw.push_back(
+                        ((framer->frame_body[b+0] & 1) << 7) |
+                        ((framer->frame_body[b+1] & 1) << 6) |
+                        ((framer->frame_body[b+2] & 1) << 5) |
+                        ((framer->frame_body[b+3] & 1) << 4) |
+                        ((framer->frame_body[b+4] & 1) << 3) |
+                        ((framer->frame_body[b+5] & 1) << 2) |
+                        ((framer->frame_body[b+6] & 1) << 1) |
+                        ((framer->frame_body[b+7] & 1)));
+                }
+                process_duid(M_P25_RAW_FRAME, framer->nac, raw.data(), (int)raw.size());
+            }
+
             // extract additional signalling information and voice codewords
             switch(framer->duid) {
                 case 0x00:

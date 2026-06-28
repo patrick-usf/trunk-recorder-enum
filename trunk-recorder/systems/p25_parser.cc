@@ -2066,6 +2066,33 @@ std::vector<TrunkMessage> P25Parser::parse_message(gr::message::sptr msg, System
     messages.push_back(message);
     log_with_freq(messages, system, 22, fallback_freq);
     return messages;
+  } else if (type == 21) { // M_P25_RAW_FRAME — raw frame bits (post-sync, pre-FEC) for all DUIDs
+    // Payload: byte[0]=actual DUID, bytes[1..]=packed bits from bit-48 onwards (NID+body).
+    // Primary use: log LDU1/LDU2/HDU/TDU bytes that have no other raw-byte log path,
+    // and to provide a complete pre-FEC byte record for every uplink frame.
+    static const char *duid_names[] = {
+      "HDU",nullptr,nullptr,"TDU",nullptr,"LDU1",nullptr,"TSBK",
+      nullptr,nullptr,"LDU2",nullptr,"PDU",nullptr,nullptr,"TDULC"
+    };
+    message.nac = nac;
+    if (!s.empty()) {
+      uint8_t actual_duid = (uint8_t)s[0];
+      const char *dname = (actual_duid < 16 && duid_names[actual_duid]) ? duid_names[actual_duid] : "UNK";
+      message.duid = actual_duid;
+      message.message_type = UNKNOWN;
+      std::ostringstream raw;
+      raw << "raw_frame duid=0x" << std::hex << std::setfill('0') << std::setw(2) << (unsigned)actual_duid
+          << "(" << dname << ") nbytes=" << std::dec << (s.length() - 1) << " hex=";
+      for (size_t i = 1; i < s.length(); i++)
+        raw << std::hex << std::setfill('0') << std::setw(2) << (unsigned)(uint8_t)s[i];
+      message.raw_frame = raw.str();
+      message.meta      = message.raw_frame;
+      message.frame_hex = bytes_to_hex(s.substr(1));
+    }
+    apply_raw_meta(message);
+    messages.push_back(message);
+    log_with_freq(messages, system, 21, fallback_freq);
+    return messages;
   }
   messages.push_back(message);
   return messages;
