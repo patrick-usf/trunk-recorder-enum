@@ -15,6 +15,8 @@
 
 #include "check_frame_sync.h"
 
+static const size_t P25_PDU_FRAME_SIZE = 2304;
+
 static const int max_frame_lengths[16] = {
     // lengths are in bits, not symbols
     792,	                // 0 - hdu
@@ -28,7 +30,7 @@ static const int max_frame_lengths[16] = {
     0,	                    // 9 - VSELP "voice PDU"
     P25_VOICE_FRAME_SIZE,	// a - ldu2
     0,	                    // b - undef
-    P25_VOICE_FRAME_SIZE,	// c - pdu: allow extended packet data frames; new sync still cuts short frames
+    P25_PDU_FRAME_SIZE,		// c - pdu: allow extended packet data frames; new sync still cuts short frames
     0, 0,	                // d, e - undef
     432	                    // f - tdu
 };
@@ -49,7 +51,7 @@ p25_framer::p25_framer(log_ts& logger, int debug, int msgq_id) :
     nac(0),
     duid(0),
     parity(0),
-    frame_body(P25_VOICE_FRAME_SIZE)
+    frame_body(P25_PDU_FRAME_SIZE)
 {
 }
 
