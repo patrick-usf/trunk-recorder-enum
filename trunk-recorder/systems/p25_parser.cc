@@ -1435,6 +1435,77 @@ static bool ipv4_header_checksum_ok(const std::string &ip) {
   return ((~sum & 0xffff) == 0);
 }
 
+static uint16_t p25_confirmed_crc9(const uint8_t *block18) {
+  const uint16_t poly = 0x059;
+  uint16_t crc = 0;
+  uint8_t dbsn = (block18[0] >> 1) & 0x7f;
+
+  for (int i = 6; i >= 0; --i) {
+    uint8_t bit = (dbsn >> i) & 1;
+    uint8_t msb = (crc >> 8) & 1;
+    crc = ((crc << 1) | bit) & 0x1ff;
+    if (msb) crc ^= poly;
+  }
+  for (int b = 2; b < 18; ++b) {
+    uint8_t octet = block18[b];
+    for (int i = 7; i >= 0; --i) {
+      uint8_t bit = (octet >> i) & 1;
+      uint8_t msb = (crc >> 8) & 1;
+      crc = ((crc << 1) | bit) & 0x1ff;
+      if (msb) crc ^= poly;
+    }
+  }
+  for (int i = 0; i < 9; ++i) {
+    uint8_t msb = (crc >> 8) & 1;
+    crc = (crc << 1) & 0x1ff;
+    if (msb) crc ^= poly;
+  }
+  return (crc ^ 0x1ff) & 0x1ff;
+}
+
+static void append_confirmed_block_diag(std::ostringstream &meta,
+                                        const std::string &prefix,
+                                        const uint8_t *blocks,
+                                        size_t nblocks) {
+  if (nblocks == 0)
+    return;
+
+  std::ostringstream dbsn_seq;
+  std::ostringstream crc9_ok;
+  std::ostringstream crc9_rx;
+  std::ostringstream crc9_calc;
+  dbsn_seq << std::dec;
+  crc9_ok << std::dec;
+  crc9_rx << std::hex << std::setfill('0');
+  crc9_calc << std::hex << std::setfill('0');
+
+  unsigned int bad = 0;
+  for (size_t bi = 0; bi < nblocks; ++bi) {
+    const uint8_t *blk = blocks + bi * 18;
+    uint8_t dbsn = (blk[0] >> 1) & 0x7f;
+    uint16_t rx = ((uint16_t)(blk[0] & 0x01) << 8) | blk[1];
+    uint16_t calc = p25_confirmed_crc9(blk);
+    bool ok = (rx == calc);
+    if (!ok) bad++;
+    if (bi) {
+      dbsn_seq << ',';
+      crc9_ok << ',';
+      crc9_rx << ',';
+      crc9_calc << ',';
+    }
+    dbsn_seq << (unsigned)dbsn;
+    crc9_ok << (ok ? 1 : 0);
+    crc9_rx << std::setw(3) << (unsigned)rx;
+    crc9_calc << std::setw(3) << (unsigned)calc;
+  }
+
+  meta << ' ' << prefix << "dbsn_seq=" << dbsn_seq.str()
+       << ' ' << prefix << "crc9_ok=" << crc9_ok.str()
+       << ' ' << prefix << "crc9_bad_count=" << std::dec << bad
+       << ' ' << prefix << "crc9_rx=" << crc9_rx.str()
+       << ' ' << prefix << "crc9_calc=" << crc9_calc.str();
+}
+
 // Apply fallback_freq to messages whose freq field is 0, then log.
 // Used by the data-channel monitor so every frame carries the tuned channel frequency.
 static void log_with_freq(std::vector<TrunkMessage> &msgs, System *sys,
@@ -2035,6 +2106,9 @@ std::vector<TrunkMessage> P25Parser::parse_message(gr::message::sptr msg, System
            << " payload_mode=" << (confirmed_data ? "strip_dbh_adjusted" : "raw");
       if (blks != captured_blks)
         meta << " pdu_trunc=1";
+      if (confirmed_data && captured_blks > 0 && hex_end >= 12 + captured_blks * 18) {
+        append_confirmed_block_diag(meta, "", (const uint8_t*)s.data() + 12, captured_blks);
+      }
 
       bool have_sndcp = false;
       uint8_t sndcp_x_val = 0;
@@ -2146,7 +2220,28 @@ std::vector<TrunkMessage> P25Parser::parse_message(gr::message::sptr msg, System
         if (!phyblks.empty()) meta << " phy_blks=" << phyblks;
         if (!extrablks.empty()) meta << " extra_blks=" << extrablks;
         if (!allrawbits.empty()) meta << std::dec << " allrawbits_hex_len=" << allrawbits.size();
-        if (!extradata.empty()) meta << std::dec << " extradata_hex_len=" << extradata.size();
+        if (!extradata.empty()) {
+          meta << std::dec << " extradata_hex_len=" << extradata.size();
+          if (confirmed_data && (extradata.size() % 36) == 0) {
+            std::string extra_bytes;
+            extra_bytes.reserve(extradata.size() / 2);
+            bool hex_ok = true;
+            for (size_t i = 0; i < extradata.size(); i += 2) {
+              auto hex_val = [](char c) -> int {
+                if (c >= '0' && c <= '9') return c - '0';
+                if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+                if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+                return -1;
+              };
+              int hi = hex_val(extradata[i]);
+              int lo = hex_val(extradata[i + 1]);
+              if (hi < 0 || lo < 0) { hex_ok = false; break; }
+              extra_bytes.push_back((char)((hi << 4) | lo));
+            }
+            if (hex_ok && !extra_bytes.empty())
+              append_confirmed_block_diag(meta, "extra_", (const uint8_t*)extra_bytes.data(), extra_bytes.size() / 18);
+          }
+        }
         if (!message.pre_fec_bits.empty()) meta << std::dec << " rawbits_hex_len=" << message.pre_fec_bits.size();
       }
       std::ostringstream raw;

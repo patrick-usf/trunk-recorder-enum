@@ -238,7 +238,7 @@ def crc9_p25(data_bytes_18):
         crc = (crc << 1) & 0x1FF
         if msb:
             crc ^= POLY
-    return crc
+    return crc ^ 0x1FF
 
 def unpack_dibits(raw_bytes, n_dibits):
     """Unpack packed bytes (4 dibits/byte, MSB first) → list of n_dibits dibit values."""
