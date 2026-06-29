@@ -40,6 +40,7 @@ class p25_framer
         bool rx_sym(uint8_t dibit) ;
         uint32_t load_nid(const uint8_t *syms, int nsyms, const uint64_t fs);
         bool load_body(const uint8_t * syms, int nsyms);
+        uint32_t get_frame_size_limit() const { return frame_size_limit; }
 
         uint32_t symbols_received;
 
@@ -53,6 +54,7 @@ class p25_framer
         uint32_t bch_errors;	// number of errors detected in bch
         uint64_t raw_fs  = 0;   // received 48-bit FS word at sync detection
         uint64_t raw_nid = 0;   // received 64-bit NID before BCH correction
+        uint8_t frame_end_reason = 0; // 1=size_limit, 2=new_sync, 3=load_body
 };
 
 #endif /* INCLUDED_P25_FRAMER_H */

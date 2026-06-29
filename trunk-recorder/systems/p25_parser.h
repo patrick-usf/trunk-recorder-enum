@@ -33,6 +33,14 @@ class P25Parser : public TrunkParser {
   bool custom_freq_table_loaded = false;
   std::map<double, std::array<uint8_t, 9>> last_ess_mi_; // keyed by fallback_freq (channel Hz)
 
+  struct SndcpReassemblyState {
+    TrunkMessage base;
+    std::string ipv4_bytes;
+    std::vector<std::string> raw_frames;
+    unsigned int segments = 0;
+  };
+  std::map<std::string, SndcpReassemblyState> sndcp_reassembly_;
+
 public:
   P25Parser();
   long get_tdma_slot(int chan_id, int sys_num);

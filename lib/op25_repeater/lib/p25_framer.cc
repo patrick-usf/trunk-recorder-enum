@@ -28,7 +28,7 @@ static const int max_frame_lengths[16] = {
     0,	                    // 9 - VSELP "voice PDU"
     P25_VOICE_FRAME_SIZE,	// a - ldu2
     0,	                    // b - undef
-    1152,	                // c - pdu (up to 5 blocks: header + 4 data; was 962=4 blocks)
+    P25_VOICE_FRAME_SIZE,	// c - pdu: allow extended packet data frames; new sync still cuts short frames
     0, 0,	                // d, e - undef
     432	                    // f - tdu
 };
@@ -45,6 +45,7 @@ p25_framer::p25_framer(log_ts& logger, int debug, int msgq_id) :
     d_unexpected_nac(0),
     logts(logger),
     symbols_received(0),
+    frame_end_reason(0),
     nac(0),
     duid(0),
     parity(0),
@@ -185,6 +186,7 @@ bool p25_framer::rx_sym(uint8_t dibit) {
     if ((next_bit > 0) && (next_bit >= frame_size_limit || nid_syms > 0)) {
         if (nid_syms > 0)  // if this was triggered by FS
             next_bit -= 48;	// FS has been added to body - remove it
+        frame_end_reason = nid_syms > 0 ? 2 : 1;
         p25_setup_frame_header(frame_body, nid_word);
         frame_size = next_bit;
         next_bit = 0;
@@ -246,6 +248,7 @@ bool p25_framer::load_body(const uint8_t * syms, int nsyms) {
         frame_body[next_bit++] =  dibit       & 1;
     }
     frame_size = next_bit;
+    frame_end_reason = 3;
     return true;
 }
 

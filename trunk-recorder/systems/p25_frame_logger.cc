@@ -240,6 +240,7 @@ std::string P25FrameLogger::decode_status(const TrunkMessage &msg) const {
 
 std::string P25FrameLogger::opcode_name(unsigned long opcode, unsigned long mfid,
                                         int frame_type) const {
+  if (frame_type == 23) return "IPV4_PACKET";
   if (frame_type == 21) return ""; // M_P25_RAW_FRAME — no opcode; suppress TSBK_UNKNOWN
   if (frame_type == 19) { // LCW or ESS (type 19 carries both)
     // ESS frames carry algid in the opcode field; all standard algids are > 0x3f
@@ -407,6 +408,7 @@ std::string P25FrameLogger::format_record(const TrunkMessage &msg,
     case 18: frame_type_str = "MAC_PDU"; break;
     case 19: frame_type_str = (msg.duid == 0x0a) ? "ESS" : "LCW"; break;
     case 20: frame_type_str = "RAW_PDU"; break;
+    case 23: frame_type_str = "IPV4_PACKET"; break;
     case 21: { // M_P25_RAW_FRAME — use DUID name
       static const char *n21[] = {
         "HDU",nullptr,nullptr,"TDU",nullptr,"LDU1",nullptr,"TSBK",

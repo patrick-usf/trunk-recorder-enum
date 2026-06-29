@@ -181,15 +181,22 @@ std::vector<TrunkMessage> P25Parser::decode_mbt_data(unsigned long opcode, boost
   message.phase2_tdma = false;
   message.tdma_slot = 0;
   message.freq = 0;
-  message.opcode = opcode;
   message.mfid = bitset_shift_mask(header, 72, 0xff);
-  message.direction = DIR_OSP;
+  // io bit: header byte 2, bit 7 (MSB) = 1 → ISP (radio→FNE), 0 → OSP (FNE→radio).
+  // In the bitset (LSB-first, <<16 shifted): byte 2 bit 7 is at position 79.
+  bool mbt_isp = (bool)bitset_shift_mask(header, 79, 0x1);
+  message.direction = mbt_isp ? DIR_ISP : DIR_OSP;
+  // ISP MBT opcodes share numeric values with OSP opcodes; tag them with bit 6 so the
+  // opcode_name() lookup in p25_frame_logger can distinguish GRP_AFF_REQ (0x68) from
+  // GRP_AFF_RSP (0x28), etc.
+  message.opcode = mbt_isp ? (opcode | 0x40) : opcode;
   message.patch_data.sg = 0;
   message.patch_data.ga1 = 0;
   message.patch_data.ga2 = 0;
   message.patch_data.ga3 = 0;
 
-  BOOST_LOG_TRIVIAL(debug) << "decode_mbt_data: $" << opcode;
+  BOOST_LOG_TRIVIAL(debug) << "decode_mbt_data: $" << opcode
+                           << " dir=" << (message.direction == DIR_ISP ? "ISP" : "OSP");
   if (opcode == 0x0) { // grp voice channel grant
     // unsigned long mfrid = bitset_shift_mask(header, 72, 0xff);
     unsigned long ch1 = bitset_shift_mask(mbt_data, 64, 0xffff);
@@ -250,19 +257,37 @@ std::vector<TrunkMessage> P25Parser::decode_mbt_data(unsigned long opcode, boost
       message.meta = os.str();
       BOOST_LOG_TRIVIAL(debug) << os.str();
     }
-  } else if (opcode == 0x028) { // grp_aff_rsp
-    unsigned long mfrid = bitset_shift_mask(mbt_data, 56, 0xff);
-    unsigned long wacn = (bitset_shift_left_mask(header, 4, 0xffff0) + bitset_shift_mask(mbt_data, 188, 0xf));
-    unsigned long syid = bitset_shift_mask(mbt_data, 176, 0xfff);
-    unsigned long gid = bitset_shift_mask(mbt_data, 160, 0xffff);
-    unsigned long ada = bitset_shift_mask(mbt_data, 144, 0xffff);
-    unsigned long ga = bitset_shift_mask(mbt_data, 128, 0xffff);
-    unsigned long lg = bitset_shift_mask(mbt_data, 127, 0x1);
-    unsigned long gav = bitset_shift_mask(mbt_data, 120, 0x3);
-
+  } else if (opcode == 0x028) {
+    if (message.direction == DIR_ISP) {
+      // ISP: GRP_AFF_REQ — group affiliation request from MDT.
+      // Data block fields (wacn, syid, ga, src_id) require data blocks that are often
+      // absent in uplink captures. Log what is available from the header.
+      unsigned long src = bitset_shift_mask(header, 48, 0xffffff);
+      os << "mbt28_isp\tGRP_AFF_REQ:\tsrc=" << src;
+      if (mbt_data.size() > 64) {
+        unsigned long wacn = bitset_shift_mask(mbt_data, 188, 0xfffff);
+        unsigned long syid = bitset_shift_mask(mbt_data, 176, 0xfff);
+        unsigned long ga   = bitset_shift_mask(mbt_data, 128, 0xffff);
+        os << "\twacn=0x" << std::hex << wacn << "\tsyid=0x" << syid << "\tga=" << std::dec << ga;
+        message.talkgroup = ga;
+        message.source = src;
+      }
+      message.meta = os.str();
+      BOOST_LOG_TRIVIAL(debug) << os.str();
+    } else {
+      // OSP: GRP_AFF_RSP — group affiliation response from FNE.
+      unsigned long mfrid = bitset_shift_mask(mbt_data, 56, 0xff);
+      unsigned long wacn = (bitset_shift_left_mask(header, 4, 0xffff0) + bitset_shift_mask(mbt_data, 188, 0xf));
+      unsigned long syid = bitset_shift_mask(mbt_data, 176, 0xfff);
+      unsigned long gid = bitset_shift_mask(mbt_data, 160, 0xffff);
+      unsigned long ada = bitset_shift_mask(mbt_data, 144, 0xffff);
+      unsigned long ga = bitset_shift_mask(mbt_data, 128, 0xffff);
+      unsigned long lg = bitset_shift_mask(mbt_data, 127, 0x1);
+      unsigned long gav = bitset_shift_mask(mbt_data, 120, 0x3);
       os << "mbt28\tmbt(0x28) grp_aff_rsp:\tMFRID: " << mfrid <<  "\tWACN: " <<  wacn << "\tSYID: " << syid << "\tLG: " << lg << "\tGAV: " << gav << "\tADA: " << ada << "\tGA: " << ga << "\tLG: " << lg << "\tGID: " << gid;
       message.meta = os.str();
       BOOST_LOG_TRIVIAL(debug) << os.str();
+    }
   } else if (opcode == 0x3a) { // rfss status
     unsigned long syid = bitset_shift_mask(header, 48, 0xfff);
     unsigned long rfid = bitset_shift_mask(mbt_data, 88, 0xff);
@@ -1391,6 +1416,25 @@ static std::string bytes_to_hex(const std::string &data, size_t max_len = std::s
   return oss.str();
 }
 
+static uint16_t be16_at(const std::string &data, size_t off) {
+  return ((uint16_t)(uint8_t)data[off] << 8) | (uint8_t)data[off + 1];
+}
+
+static bool ipv4_header_checksum_ok(const std::string &ip) {
+  if (ip.size() < 20 || (((uint8_t)ip[0] >> 4) != 4))
+    return false;
+  uint8_t ihl = (uint8_t)ip[0] & 0x0f;
+  size_t hdr_len = ihl * 4;
+  if (ihl < 5 || hdr_len > ip.size() || (hdr_len & 1))
+    return false;
+  uint32_t sum = 0;
+  for (size_t i = 0; i < hdr_len; i += 2)
+    sum += ((uint8_t)ip[i] << 8) | (uint8_t)ip[i + 1];
+  while (sum >> 16)
+    sum = (sum & 0xffff) + (sum >> 16);
+  return ((~sum & 0xffff) == 0);
+}
+
 // Apply fallback_freq to messages whose freq field is 0, then log.
 // Used by the data-channel monitor so every frame carries the tuned channel frequency.
 static void log_with_freq(std::vector<TrunkMessage> &msgs, System *sys,
@@ -1881,6 +1925,7 @@ std::vector<TrunkMessage> P25Parser::parse_message(gr::message::sptr msg, System
     message.direction = DIR_OSP;
     message.duid      = 0x0c;
     message.mfid      = 0;
+    std::vector<TrunkMessage> ipv4_messages;
     if (s.length() >= 3) {
       uint8_t  fmt  = (uint8_t)s[0] & 0x1f;
       uint8_t  sap  = (uint8_t)s[1] & 0x3f;
@@ -1902,6 +1947,7 @@ std::vector<TrunkMessage> P25Parser::parse_message(gr::message::sptr msg, System
       uint8_t pad_oct   = s.length() >= 8 ? ((uint8_t)s[7] >> 3) & 0x1f : 0;
       uint8_t data_off  = s.length() >= 10 ? (uint8_t)s[9] & 0x3f : 0;
       message.mfid = mfid;
+      message.direction = io_bit ? DIR_ISP : DIR_OSP;
 
       // CRC-CCITT-16 residue check over all 12 header bytes (result==0 means CRC-OK)
       bool hdr_crc_ok = false;
@@ -1936,51 +1982,8 @@ std::vector<TrunkMessage> P25Parser::parse_message(gr::message::sptr msg, System
            << " hdr_crc=" << (hdr_crc_ok ? "ok" : "BAD");
       if (fmf_bit) meta << " last";
 
-      // Parse SNDCP header from first data block when block data is present.
-      // Block 1 starts at s[12]; skip data_off bytes, then 2-byte SNDCP header.
-      size_t sndcp_off = 12 + data_off;          // byte offset into s of SNDCP header
-      size_t ip_off    = sndcp_off + 2;           // expected IP start offset
-      if (s.length() > sndcp_off + 1) {
-        uint8_t sc0 = (uint8_t)s[sndcp_off];
-        uint8_t sc1 = (uint8_t)s[sndcp_off + 1];
-        uint8_t sndcp_x    = (sc0 >> 7) & 1;    // 1 = compressed header
-        uint8_t sndcp_t    = (sc0 >> 6) & 1;    // 1 = data PDU (SN-DATA)
-        uint8_t sndcp_m    = (sc0 >> 5) & 1;    // 1 = more segments follow
-        uint8_t sndcp_nsapi = sc0 & 0x1f;
-        meta << " sndcp_x=" << (unsigned)sndcp_x
-             << " sndcp_t=" << (unsigned)sndcp_t
-             << " sndcp_m=" << (unsigned)sndcp_m
-             << " nsapi=" << (unsigned)sndcp_nsapi
-             << " npdu_seq=" << (unsigned)sc1
-             << " ip_off=" << ip_off;
-        // Peek at potential IPv4 header byte to aid verification
-        if (s.length() > ip_off) {
-          uint8_t ip0 = (uint8_t)s[ip_off];
-          meta << " ip0=0x" << std::hex << std::setfill('0') << std::setw(2) << (unsigned)ip0;
-          if ((ip0 >> 4) == 4) {
-            // Log IP total_len and protocol for IPv4
-            if (s.length() > ip_off + 9) {
-              uint16_t ip_len  = ((uint8_t)s[ip_off+2] << 8) | (uint8_t)s[ip_off+3];
-              uint8_t  ip_ttl  = (uint8_t)s[ip_off+8];
-              uint8_t  ip_proto= (uint8_t)s[ip_off+9];
-              meta << std::dec
-                   << " ip_len=" << ip_len
-                   << " ip_ttl=" << (unsigned)ip_ttl
-                   << " ip_proto=" << (unsigned)ip_proto;
-            }
-            // Verify IPv4 header checksum over 20 bytes when available
-            if (s.length() >= ip_off + 20) {
-              uint32_t sum = 0;
-              for (size_t _w = 0; _w < 20; _w += 2)
-                sum += ((uint8_t)s[ip_off+_w] << 8) | (uint8_t)s[ip_off+_w+1];
-              while (sum >> 16) sum = (sum & 0xffff) + (sum >> 16);
-              meta << " ip_crc=" << ((~sum & 0xffff) == 0 ? "ok" : "BAD");
-            }
-          }
-        }
-      }
-
-      // Scan backward for 0xAB 0xCD fec section marker; exclude from hex dump when found.
+      // Scan backward for 0xAB 0xCD fec section marker; exclude from payload parsing
+      // and later hex dump when found.
       size_t fec_start = std::string::npos;
       if (s.length() >= 14) {
         for (size_t i = s.length() - 2; i >= 12; --i) {
@@ -1993,18 +1996,159 @@ std::vector<TrunkMessage> P25Parser::parse_message(gr::message::sptr msg, System
           if (i == 0) break;
         }
       }
-      if (fec_start != std::string::npos) {
-        std::string fec_full = s.substr(fec_start + 2);
-        auto rawbits_pos = fec_full.find("|RAWBITS:");
-        if (rawbits_pos != std::string::npos) {
-          message.pre_fec_bits = fec_full.substr(rawbits_pos + 9);
-          message.fec          = fec_full.substr(0, rawbits_pos);
+      size_t hex_end = (fec_start != std::string::npos) ? fec_start : s.length();
+
+      // Assemble confirmed data payload before parsing SNDCP/IP. Each decoded
+      // 18-byte confirmed data block begins with DBSN/CRC9 overhead, followed by
+      // 16 bytes of user payload. The PDU header data_off value is relative to the
+      // raw first block; after stripping the first block's 2-byte overhead, reduce
+      // the offset by two. Parsing the raw 18-byte stream crosses block overhead
+      // bytes and produces false IPv4 checksum failures.
+      bool confirmed_data = (an_bit != 0) && (fmt == 0x16);
+      size_t captured_blks = 0;
+      if (hex_end >= 12)
+        captured_blks = (hex_end - 12) / 18;
+      if (blks != 0 && captured_blks > blks)
+        captured_blks = blks;
+
+      std::string pdu_payload;
+      for (size_t bi = 0; bi < captured_blks; ++bi) {
+        size_t block_off = 12 + bi * 18;
+        if (block_off + 18 > hex_end)
+          break;
+        if (confirmed_data) {
+          pdu_payload.append(s.data() + block_off + 2, 16);
         } else {
-          message.fec = fec_full;
+          pdu_payload.append(s.data() + block_off, 18);
         }
       }
 
-      size_t hex_end = (fec_start != std::string::npos) ? fec_start : s.length();
+      size_t payload_off = data_off;
+      if (confirmed_data)
+        payload_off = (data_off > 2) ? (data_off - 2) : 0;
+
+      size_t payload_len = pdu_payload.size();
+      if (pad_oct > 0 && pad_oct < payload_len)
+        payload_len -= pad_oct;
+
+      meta << " cap_blks=" << captured_blks
+           << " payload_mode=" << (confirmed_data ? "strip_dbh_adjusted" : "raw");
+      if (blks != captured_blks)
+        meta << " pdu_trunc=1";
+
+      bool have_sndcp = false;
+      uint8_t sndcp_x_val = 0;
+      uint8_t sndcp_t_val = 0;
+      uint8_t sndcp_m_val = 0;
+      uint8_t sndcp_nsapi_val = 0;
+      uint8_t sndcp_npdu_seq_val = 0;
+      std::string sndcp_ip_segment;
+
+      if (payload_off + 1 < payload_len) {
+        const uint8_t *payload = (const uint8_t*)pdu_payload.data();
+        uint8_t sc0 = payload[payload_off];
+        uint8_t sc1 = payload[payload_off + 1];
+        uint8_t sndcp_x    = (sc0 >> 7) & 1;    // 1 = compressed header
+        uint8_t sndcp_t    = (sc0 >> 6) & 1;    // 1 = data PDU (SN-DATA)
+        uint8_t sndcp_m    = (sc0 >> 5) & 1;    // 1 = more segments follow
+        uint8_t sndcp_nsapi = sc0 & 0x1f;
+        have_sndcp = true;
+        sndcp_x_val = sndcp_x;
+        sndcp_t_val = sndcp_t;
+        sndcp_m_val = sndcp_m;
+        sndcp_nsapi_val = sndcp_nsapi;
+        sndcp_npdu_seq_val = sc1;
+        size_t ip_payload_off = payload_off + 2;
+        meta << " sndcp_x=" << (unsigned)sndcp_x
+             << " sndcp_t=" << (unsigned)sndcp_t
+             << " sndcp_m=" << (unsigned)sndcp_m
+             << " nsapi=" << (unsigned)sndcp_nsapi
+             << " npdu_seq=" << (unsigned)sc1
+             << " ip_payload_off=" << ip_payload_off;
+        // Peek at potential IPv4 header byte to aid verification
+        if (ip_payload_off < payload_len) {
+          const uint8_t *ip = payload + ip_payload_off;
+          size_t ip_avail = payload_len - ip_payload_off;
+          sndcp_ip_segment.assign((const char*)ip, ip_avail);
+          uint8_t ip0 = ip[0];
+          meta << " ip0=0x" << std::hex << std::setfill('0') << std::setw(2) << (unsigned)ip0;
+          if ((ip0 >> 4) == 4) {
+            // Log IP total_len and protocol for IPv4
+            if (ip_avail > 9) {
+              uint16_t ip_len  = (ip[2] << 8) | ip[3];
+              uint16_t ip_id   = (ip[4] << 8) | ip[5];
+              uint8_t  ip_ttl  = ip[8];
+              uint8_t  ip_proto= ip[9];
+              meta << std::dec
+                   << " ip_len=" << ip_len
+                   << " ip_id=" << ip_id
+                   << " ip_ttl=" << (unsigned)ip_ttl
+                   << " ip_proto=" << (unsigned)ip_proto;
+            }
+            if (ip_avail >= 20) {
+              meta << " ip_src=" << std::dec
+                   << (unsigned)ip[12] << "." << (unsigned)ip[13] << "."
+                   << (unsigned)ip[14] << "." << (unsigned)ip[15]
+                   << " ip_dst="
+                   << (unsigned)ip[16] << "." << (unsigned)ip[17] << "."
+                   << (unsigned)ip[18] << "." << (unsigned)ip[19];
+            }
+            // Verify IPv4 header checksum over 20 bytes when available
+            if (ip_avail >= 20) {
+              uint32_t sum = 0;
+              for (size_t _w = 0; _w < 20; _w += 2)
+                sum += (ip[_w] << 8) | ip[_w+1];
+              while (sum >> 16) sum = (sum & 0xffff) + (sum >> 16);
+              meta << " ip_crc=" << ((~sum & 0xffff) == 0 ? "ok" : "BAD");
+            }
+          }
+        }
+      }
+      if (fec_start != std::string::npos) {
+        std::string fec_full = s.substr(fec_start + 2);
+        auto rawbits_pos = fec_full.find("|RAWBITS:");
+        std::string fec_meta;
+        if (rawbits_pos != std::string::npos) {
+          message.pre_fec_bits = fec_full.substr(rawbits_pos + 9);
+          message.fec          = fec_full.substr(0, rawbits_pos);
+          fec_meta             = message.fec;
+        } else {
+          message.fec = fec_full;
+          fec_meta    = fec_full;
+        }
+
+        auto fec_field = [&fec_meta](const std::string& key) -> std::string {
+          std::string needle = "|" + key + ":";
+          size_t pos = fec_meta.find(needle);
+          size_t val = std::string::npos;
+          if (pos != std::string::npos) {
+            val = pos + needle.size();
+          } else if (fec_meta.rfind(key + ":", 0) == 0) {
+            val = key.size() + 1;
+          }
+          if (val == std::string::npos)
+            return std::string();
+          size_t end = fec_meta.find('|', val);
+          return fec_meta.substr(val, end == std::string::npos ? std::string::npos : end - val);
+        };
+        std::string seq = fec_field("SEQ");
+        std::string frlen = fec_field("FRLEN");
+        std::string bv34 = fec_field("BV34");
+        std::string capblks = fec_field("CAPBLKS");
+        std::string phyblks = fec_field("PHYBLKS");
+        std::string extrablks = fec_field("EXTRABLKS");
+        std::string allrawbits = fec_field("ALLRAWBITS");
+        std::string extradata = fec_field("EXTRADATA");
+        if (!seq.empty()) meta << " frame_seq=" << seq;
+        if (!frlen.empty()) meta << " fr_len=" << frlen;
+        if (!bv34.empty()) meta << " bv34=" << bv34;
+        if (!capblks.empty()) meta << " decoder_cap_blks=" << capblks;
+        if (!phyblks.empty()) meta << " phy_blks=" << phyblks;
+        if (!extrablks.empty()) meta << " extra_blks=" << extrablks;
+        if (!allrawbits.empty()) meta << std::dec << " allrawbits_hex_len=" << allrawbits.size();
+        if (!extradata.empty()) meta << std::dec << " extradata_hex_len=" << extradata.size();
+        if (!message.pre_fec_bits.empty()) meta << std::dec << " rawbits_hex_len=" << message.pre_fec_bits.size();
+      }
       std::ostringstream raw;
       raw << meta.str() << " bytes=";
       for (size_t i = 0; i < hex_end; i++)
@@ -2012,11 +2156,126 @@ std::vector<TrunkMessage> P25Parser::parse_message(gr::message::sptr msg, System
       message.raw_frame = raw.str();
       message.meta      = meta.str();
       message.frame_hex = bytes_to_hex(s, hex_end);
+
+      auto emit_ipv4_packet = [&](const std::string &ip_bytes,
+                                  const std::vector<std::string> &raw_frames,
+                                  unsigned int segments,
+                                  bool reassembled) -> bool {
+        if (ip_bytes.size() < 20 || (((uint8_t)ip_bytes[0] >> 4) != 4))
+          return false;
+        uint8_t ihl = (uint8_t)ip_bytes[0] & 0x0f;
+        size_t hdr_len = ihl * 4;
+        if (ihl < 5 || hdr_len > ip_bytes.size())
+          return false;
+        uint16_t ip_len = be16_at(ip_bytes, 2);
+        if (ip_len < hdr_len || ip_len > ip_bytes.size())
+          return false;
+        std::string packet = ip_bytes.substr(0, ip_len);
+        if (!ipv4_header_checksum_ok(packet))
+          return false;
+
+        TrunkMessage out = message;
+        out.message_type = UNKNOWN;
+        out.duid = 0x0c;
+        out.fec.clear();
+        out.pre_fec_bits.clear();
+        out.raw_fs = 0;
+        out.raw_nid = 0;
+        out.bch_errors = 0;
+        out.tsbk_crc = 0;
+        out.ss_count = 0;
+        out.status_dibits.clear();
+        out.frame_hex = bytes_to_hex(packet);
+
+        uint16_t ip_id = be16_at(packet, 4);
+        uint8_t ip_proto = (uint8_t)packet[9];
+        std::ostringstream ip_src;
+        ip_src << std::dec << (unsigned)(uint8_t)packet[12] << "."
+               << (unsigned)(uint8_t)packet[13] << "."
+               << (unsigned)(uint8_t)packet[14] << "."
+               << (unsigned)(uint8_t)packet[15];
+        std::ostringstream ip_dst;
+        ip_dst << std::dec << (unsigned)(uint8_t)packet[16] << "."
+               << (unsigned)(uint8_t)packet[17] << "."
+               << (unsigned)(uint8_t)packet[18] << "."
+               << (unsigned)(uint8_t)packet[19];
+
+        std::ostringstream out_meta;
+        out_meta << "ipv4_packet=1"
+                 << " reassembled=" << (reassembled ? 1 : 0)
+                 << " segments=" << segments
+                 << " llid=" << message.source
+                 << " fmt=0x" << std::hex << std::setfill('0') << std::setw(2) << (unsigned)fmt
+                 << " sap=0x" << std::setw(2) << (unsigned)sap
+                 << std::dec
+                 << " nsapi=" << (unsigned)sndcp_nsapi_val
+                 << " npdu_seq=" << (unsigned)sndcp_npdu_seq_val
+                 << " ip_len=" << ip_len
+                 << " ip_id=" << ip_id
+                 << " ip_proto=" << (unsigned)ip_proto
+                 << " ip_src=" << ip_src.str()
+                 << " ip_dst=" << ip_dst.str()
+                 << " ip_crc=ok"
+                 << " raw_pdu_segments=" << raw_frames.size();
+        out.meta = out_meta.str();
+
+        std::ostringstream out_raw;
+        out_raw << "ipv4_packet nbytes=" << packet.size()
+                << " reassembled=" << (reassembled ? 1 : 0)
+                << " segments=" << segments
+                << " raw_pdu_frame_hexes=";
+        for (size_t i = 0; i < raw_frames.size(); ++i) {
+          if (i) out_raw << "|";
+          out_raw << raw_frames[i];
+        }
+        out_raw << " ipv4=" << out.frame_hex;
+        out.raw_frame = out_raw.str();
+        ipv4_messages.push_back(out);
+        return true;
+      };
+
+      if (have_sndcp && sndcp_t_val == 1 && sndcp_x_val == 0 && !sndcp_ip_segment.empty()) {
+        std::ostringstream key;
+        key << nac << "|" << (unsigned)message.direction << "|" << (uint64_t)fallback_freq
+            << "|" << message.source << "|" << (unsigned)sap
+            << "|" << (unsigned)sndcp_nsapi_val << "|" << (unsigned)sndcp_npdu_seq_val;
+        std::string key_s = key.str();
+        bool starts_ipv4 = (((uint8_t)sndcp_ip_segment[0] >> 4) == 4);
+
+        if (sndcp_m_val) {
+          auto &state = sndcp_reassembly_[key_s];
+          if (starts_ipv4 || state.segments == 0) {
+            state = SndcpReassemblyState{};
+            state.base = message;
+          }
+          state.ipv4_bytes.append(sndcp_ip_segment);
+          state.raw_frames.push_back(message.frame_hex);
+          state.segments++;
+        } else {
+          auto it_reasm = sndcp_reassembly_.find(key_s);
+          if (it_reasm != sndcp_reassembly_.end()) {
+            it_reasm->second.ipv4_bytes.append(sndcp_ip_segment);
+            it_reasm->second.raw_frames.push_back(message.frame_hex);
+            it_reasm->second.segments++;
+            emit_ipv4_packet(it_reasm->second.ipv4_bytes,
+                             it_reasm->second.raw_frames,
+                             it_reasm->second.segments,
+                             true);
+            sndcp_reassembly_.erase(it_reasm);
+          } else if (starts_ipv4) {
+            std::vector<std::string> raw_frames;
+            raw_frames.push_back(message.frame_hex);
+            emit_ipv4_packet(sndcp_ip_segment, raw_frames, 1, false);
+          }
+        }
+      }
     }
     message.message_type = UNKNOWN;
     apply_raw_meta(message);
     messages.push_back(message);
     log_with_freq(messages, system, 20, fallback_freq);
+    if (!ipv4_messages.empty())
+      log_with_freq(ipv4_messages, system, 23, fallback_freq);
     return messages;
   } else if (type == 22) { // HDU — Header Data Unit, call start (DUID 0x00)
     // payload: MI(9) + MFID(1) + algid(1) + keyid(2) + tgid(2) = 15 bytes after NAC strip
@@ -2074,20 +2333,67 @@ std::vector<TrunkMessage> P25Parser::parse_message(gr::message::sptr msg, System
       "HDU",nullptr,nullptr,"TDU",nullptr,"LDU1",nullptr,"TSBK",
       nullptr,nullptr,"LDU2",nullptr,"PDU",nullptr,nullptr,"TDULC"
     };
-    message.nac = nac;
+    message.nac       = nac;
+    message.direction = DIR_ISP; // all RAW_FRAME captures come from the uplink receiver
     if (!s.empty()) {
       uint8_t actual_duid = (uint8_t)s[0];
       const char *dname = (actual_duid < 16 && duid_names[actual_duid]) ? duid_names[actual_duid] : "UNK";
-      message.duid = actual_duid;
+      message.duid         = actual_duid;
       message.message_type = UNKNOWN;
+
+      size_t raw_end = s.length();
+      std::string raw_meta_extra;
+      if (s.length() >= 4) {
+        for (size_t i = s.length() - 2; i >= 1; --i) {
+          if ((uint8_t)s[i] == 0xAB && (uint8_t)s[i+1] == 0xCE) {
+            bool valid = true;
+            for (size_t j = i + 2; j < s.length(); ++j) {
+              uint8_t c = (uint8_t)s[j];
+              if (c < 0x20 || c >= 0x80) { valid = false; break; }
+            }
+            if (valid) {
+              raw_end = i;
+              raw_meta_extra = s.substr(i + 2);
+              break;
+            }
+          }
+          if (i == 1) break;
+        }
+      }
+
       std::ostringstream raw;
       raw << "raw_frame duid=0x" << std::hex << std::setfill('0') << std::setw(2) << (unsigned)actual_duid
-          << "(" << dname << ") nbytes=" << std::dec << (s.length() - 1) << " hex=";
-      for (size_t i = 1; i < s.length(); i++)
+          << "(" << dname << ") nac=0x" << std::setw(3) << (unsigned)nac;
+      if (!raw_meta_extra.empty())
+        raw << " " << raw_meta_extra;
+
+      // LDU1 (0x05) and LDU2 (0x0a): AES-256 encrypted voice; extract Low Speed Data.
+      // Payload layout (s[0]=duid, s[1..210]=packed frame bits 48-1727 MSB-first):
+      //   s[1..2]    = NID bytes 0-1 → NAC[11:4]=s[1], NAC[3:0]=s[2]>>4, DUID=s[2]&0x0f
+      //   s[1..9]    = NID (64 data bits including BCH parity, interleaved with status dibits)
+      //   s[9..152]  = 9×144-bit IMBE codewords (voice_codeword_bits[0..8], scattered via
+      //                interleaving table; AES-256 cipher occupies u0-u7 of each codeword)
+      //   s[153..187]= LCW/ESS overhead: 24×Hamming(10,6) codewords = 240 bits
+      //   s[188..192]= LSD (Low Speed Data): 32 bits at frame positions 1546-1577
+      //                  LSD1[15:0] = frame bits 1546-1561
+      //                  LSD2[15:0] = frame bits 1562-1577
+      if ((actual_duid == 0x05 || actual_duid == 0x0a) && raw_end >= 193) {
+        message.encrypted = true;
+        // Frame bit b → payload byte (b-48)/8, MSB-first within byte.
+        // LSD1: bits 1546-1561 → bytes 187-189 (s[188]-s[190]), crossing two byte boundaries.
+        // LSD2: bits 1562-1577 → bytes 189-191 (s[190]-s[192]).
+        uint16_t lsd1 = (((uint8_t)s[188] & 0x3F) << 10) | ((uint8_t)s[189] << 2) | ((uint8_t)s[190] >> 6);
+        uint16_t lsd2 = (((uint8_t)s[190] & 0x3F) << 10) | ((uint8_t)s[191] << 2) | ((uint8_t)s[192] >> 6);
+        raw << " enc=AES256 lsd1=0x" << std::hex << std::setfill('0') << std::setw(4) << lsd1
+            << " lsd2=0x" << std::setw(4) << lsd2;
+      }
+
+      raw << " nbytes=" << std::dec << (raw_end > 0 ? raw_end - 1 : 0) << " hex=";
+      for (size_t i = 1; i < raw_end; i++)
         raw << std::hex << std::setfill('0') << std::setw(2) << (unsigned)(uint8_t)s[i];
       message.raw_frame = raw.str();
       message.meta      = message.raw_frame;
-      message.frame_hex = bytes_to_hex(s.substr(1));
+      message.frame_hex = bytes_to_hex(s.substr(1, raw_end > 0 ? raw_end - 1 : 0));
     }
     apply_raw_meta(message);
     messages.push_back(message);

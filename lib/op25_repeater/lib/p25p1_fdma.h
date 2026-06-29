@@ -24,6 +24,7 @@
 
 #include <gnuradio/msg_queue.h>
 #include <deque>
+#include <vector>
 
 #include "ezpwd/rs"
 
@@ -132,6 +133,21 @@ namespace gr {
 
                 uint16_t d_pending_crc = 0;
                 std::vector<uint8_t> d_pending_status_dibits;
+
+                struct pending_pdu_state {
+                    bool active = false;
+                    uint32_t nac = 0;
+                    uint32_t start_seq = 0;
+                    uint32_t llid = 0;
+                    uint8_t fmt = 0;
+                    uint8_t sap = 0;
+                    uint8_t declared_blks = 0;
+                    size_t decoded_blks = 0;
+                    uint32_t frame_len = 0;
+                    size_t bv34_len = 0;
+                };
+                pending_pdu_state d_pending_pdu;
+                uint32_t d_frame_seq;
 
                 imbe_vocoder vocoder; // for original full rate vocoder
 

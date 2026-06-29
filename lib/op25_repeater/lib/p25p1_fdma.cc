@@ -312,6 +312,7 @@ namespace gr {
             ess_keyid(0),
             ess_algid(0x80),
             vf_tgid(0),
+            d_frame_seq(0),
 			terminate_call(std::pair<bool,long>(false,0)),
             p1voice_decode((debug > 0), udp, output_queue)
         {
@@ -357,6 +358,7 @@ namespace gr {
 		}
 		void p25p1_fdma::clear() {
 			p1voice_decode.clear();
+            d_pending_pdu.active = false;
 		}
 
         void p25p1_fdma::process_duid(uint32_t const duid, uint32_t const nac, const uint8_t* buf, const int len, const std::string& fec) {
@@ -802,36 +804,111 @@ namespace gr {
                     }
 
                     fec_seg trl_seg = {"TRL", 0, 0, 0};
+                    const unsigned int raw_start = 48 + 64 + 196;
+                    const size_t physical_data_blks = (bv34.size() > raw_start) ?
+                        (bv34.size() - raw_start) / 196 : 0;
                     std::vector<std::vector<uint8_t>> data_blks;
-                    for (uint8_t bi = 1; bi <= blks; bi++) {
+                    std::vector<std::vector<uint8_t>> extra_data_blks;
+                    for (size_t bi = 1; bi <= physical_data_blks; bi++) {
                         unsigned int start = 48 + 64 + bi * 196;
-                        if (start + 196 > bv34.size()) break;
                         std::vector<uint8_t> blk(18, 0);
                         int cost = block_deinterleave_34(bv34, start, blk.data());
                         trl_seg.detected++;
                         trl_seg.corrected++;
                         if (cost > 20) trl_seg.remaining = 1;
                         if (d_debug >= 10) {
-                            fprintf(stderr, "[PDU_BLK34] bi=%u cost=%d buf=%02x%02x%02x%02x\n",
-                                    bi, cost, blk[0], blk[1], blk[2], blk[3]);
+                            fprintf(stderr, "[PDU_BLK34] bi=%zu cost=%d declared=%s buf=%02x%02x%02x%02x\n",
+                                    bi, cost, (bi <= blks) ? "yes" : "no", blk[0], blk[1], blk[2], blk[3]);
                         }
-                        data_blks.push_back(std::move(blk));
+                        if (bi <= blks)
+                            data_blks.push_back(std::move(blk));
+                        else
+                            extra_data_blks.push_back(std::move(blk));
                     }
 
                     if (d_debug >= 10) {
-                        fprintf(stderr, "[PDU_BLK] nac=0x%03x fmt=%02x blks=%u data_decoded=%zu fr_len=%u bv34=%zu\n",
-                                framer->nac, fmt, blks, data_blks.size(), fr_len, bv34.size());
+                        fprintf(stderr, "[PDU_BLK] nac=0x%03x fmt=%02x blks=%u data_decoded=%zu phy_blks=%zu extra_blks=%zu fr_len=%u bv34=%zu\n",
+                                framer->nac, fmt, blks, data_blks.size(), physical_data_blks,
+                                extra_data_blks.size(), fr_len, bv34.size());
+                    }
+                    if (data_blks.size() < blks) {
+                        const uint32_t llid = ((uint32_t)deinterleave_buf[0][3] << 16) |
+                                              ((uint32_t)deinterleave_buf[0][4] << 8) |
+                                              (uint32_t)deinterleave_buf[0][5];
+                        fprintf(stderr, "%s [PDU_TRUNC] nac=0x%03x duid=0x%02x fmt=0x%02x sap=0x%02x llid=0x%06x blks=%u cap=%zu need=%u fr_len=%u bv34=%zu\n",
+                                logts.get(d_msgq_id), framer->nac, framer->duid, fmt, sap, llid,
+                                blks, data_blks.size(), (unsigned int)(blks - data_blks.size()),
+                                fr_len, bv34.size());
+                        if (d_pending_pdu.active) {
+                            fprintf(stderr, "%s [PDU_PENDING_CLEAR] reason=replaced nac=0x%03x llid=0x%06x age=%u blks=%u cap=%zu\n",
+                                    logts.get(d_msgq_id), d_pending_pdu.nac, d_pending_pdu.llid,
+                                    d_frame_seq - d_pending_pdu.start_seq,
+                                    d_pending_pdu.declared_blks, d_pending_pdu.decoded_blks);
+                        }
+                        d_pending_pdu.active = true;
+                        d_pending_pdu.nac = framer->nac;
+                        d_pending_pdu.start_seq = d_frame_seq;
+                        d_pending_pdu.llid = llid;
+                        d_pending_pdu.fmt = fmt;
+                        d_pending_pdu.sap = sap;
+                        d_pending_pdu.declared_blks = blks;
+                        d_pending_pdu.decoded_blks = data_blks.size();
+                        d_pending_pdu.frame_len = fr_len;
+                        d_pending_pdu.bv34_len = bv34.size();
+                        fprintf(stderr, "%s [PDU_PENDING_START] nac=0x%03x llid=0x%06x seq=%u fmt=0x%02x sap=0x%02x blks=%u cap=%zu need=%u fr_len=%u bv34=%zu\n",
+                                logts.get(d_msgq_id), d_pending_pdu.nac, d_pending_pdu.llid,
+                                d_pending_pdu.start_seq, d_pending_pdu.fmt, d_pending_pdu.sap,
+                                d_pending_pdu.declared_blks, d_pending_pdu.decoded_blks,
+                                (unsigned int)(d_pending_pdu.declared_blks - d_pending_pdu.decoded_blks),
+                                d_pending_pdu.frame_len, d_pending_pdu.bv34_len);
+                    } else if (d_pending_pdu.active) {
+                        fprintf(stderr, "%s [PDU_PENDING_CLEAR] reason=new_complete_pdu nac=0x%03x llid=0x%06x age=%u blks=%u cap=%zu\n",
+                                logts.get(d_msgq_id), d_pending_pdu.nac, d_pending_pdu.llid,
+                                d_frame_seq - d_pending_pdu.start_seq,
+                                d_pending_pdu.declared_blks, d_pending_pdu.decoded_blks);
+                        d_pending_pdu.active = false;
                     }
 
                     // Serialize: 12-byte header + 18-byte data blocks, then fec section
                     std::string fec_str = fec_seg_str(trl_seg);
-
-                    // Append raw pre-FEC bits: pack bv34[raw_start..raw_start+blks*196-1]
-                    // MSB-first. raw_start = 48 (sync bits) + 64 (NID bits) + 196 (header
-                    // block bits) = first data block's offset in bv34.
                     {
-                        const unsigned int raw_start = 48 + 64 + 196;
-                        const unsigned int n_bits    = (unsigned int)data_blks.size() * 196;
+                        std::ostringstream corr_oss;
+                        corr_oss << "|SEQ:" << d_frame_seq
+                                 << "|FRLEN:" << fr_len
+                                 << "|BV34:" << bv34.size()
+                                 << "|CAPBLKS:" << data_blks.size()
+                                 << "|PHYBLKS:" << physical_data_blks
+                                 << "|EXTRABLKS:" << extra_data_blks.size();
+                        fec_str += corr_oss.str();
+                    }
+
+                    if (!extra_data_blks.empty()) {
+                        std::ostringstream extra_hex;
+                        extra_hex << std::hex << std::setfill('0');
+                        for (const auto& blk : extra_data_blks) {
+                            for (uint8_t b : blk)
+                                extra_hex << std::setw(2) << (unsigned int)b;
+                        }
+                        fec_str += "|EXTRADATA:" + extra_hex.str();
+                    }
+
+                    // Preserve both declared-payload raw bits and all physically captured
+                    // data-block slots so over-captured PDU tails remain inspectable.
+                    {
+                        const unsigned int all_n_bits = (unsigned int)physical_data_blks * 196;
+                        std::vector<uint8_t> all_packed((all_n_bits + 7) / 8, 0);
+                        for (unsigned int i = 0; i < all_n_bits; i++) {
+                            unsigned int idx = raw_start + i;
+                            if (idx < bv34.size())
+                                all_packed[i / 8] |= (bv34[idx] & 1) << (7 - (i & 7));
+                        }
+                        std::ostringstream all_hex;
+                        all_hex << std::hex << std::setfill('0');
+                        for (uint8_t b : all_packed)
+                            all_hex << std::setw(2) << (unsigned int)b;
+                        fec_str += "|ALLRAWBITS:" + all_hex.str();
+
+                        const unsigned int n_bits = (unsigned int)data_blks.size() * 196;
                         std::vector<uint8_t> packed((n_bits + 7) / 8, 0);
                         for (unsigned int i = 0; i < n_bits; i++) {
                             unsigned int idx = raw_start + i;
@@ -1060,6 +1137,8 @@ namespace gr {
         }
 
         void p25p1_fdma::process_frame() {
+            d_frame_seq++;
+
             // Raw frame hook: emit M_P25_RAW_FRAME for every decoded frame so that
             // uplink captures can log LDU1/LDU2/HDU/TDU bytes that have no other
             // raw-byte log path.  Payload = [duid(1)][bits 48..frame_size-1 packed].
@@ -1068,8 +1147,9 @@ namespace gr {
             if (d_do_msgq && framer->frame_size > 48) {
                 const uint32_t sync_bits = 48;
                 uint32_t payload_bits = framer->frame_size - sync_bits;
+                const bool candidate_dump = (framer->duid == 0x0c) || d_pending_pdu.active;
                 std::vector<uint8_t> raw;
-                raw.reserve(1 + (payload_bits + 7) / 8);
+                raw.reserve(1 + (payload_bits + 7) / 8 + 256);
                 raw.push_back((uint8_t)framer->duid);
                 for (uint32_t i = 0; i + 7 < payload_bits; i += 8) {
                     uint32_t b = sync_bits + i;
@@ -1083,7 +1163,80 @@ namespace gr {
                         ((framer->frame_body[b+6] & 1) << 1) |
                         ((framer->frame_body[b+7] & 1)));
                 }
+
+                const char *reason = "unknown";
+                if (framer->frame_end_reason == 1) reason = "size_limit";
+                else if (framer->frame_end_reason == 2) reason = "new_sync";
+                else if (framer->frame_end_reason == 3) reason = "load_body";
+
+                std::ostringstream raw_meta;
+                raw_meta << "frame_seq=" << d_frame_seq
+                         << " fr_len=" << framer->frame_size
+                         << " frame_limit=" << framer->get_frame_size_limit()
+                         << " end_reason=" << reason
+                         << " bch_errors=" << framer->bch_errors;
+
+                if (candidate_dump) {
+                    std::vector<uint8_t> dsbits;
+                    uint8_t out = 0;
+                    int out_bits = 0;
+                    for (uint32_t d = 0; d + 1 < (framer->frame_size >> 1); d++) {
+                        if ((d + 1) % 36 == 0) continue;
+                        for (int k = 0; k < 2; k++) {
+                            uint8_t bit = framer->frame_body[d * 2 + k] & 1;
+                            out = (out << 1) | bit;
+                            out_bits++;
+                            if (out_bits == 8) {
+                                dsbits.push_back(out);
+                                out = 0;
+                                out_bits = 0;
+                            }
+                        }
+                    }
+                    if (out_bits != 0)
+                        dsbits.push_back(out << (8 - out_bits));
+
+                    std::ostringstream ds_hex;
+                    ds_hex << std::hex << std::setfill('0');
+                    for (uint8_t b : dsbits)
+                        ds_hex << std::setw(2) << (unsigned int)b;
+
+                    raw_meta << " candidate=1"
+                             << " dsbits_hex_len=" << ds_hex.str().size()
+                             << " dsbits=" << ds_hex.str();
+                    if (d_pending_pdu.active) {
+                        raw_meta << " pending_llid=" << std::dec << d_pending_pdu.llid
+                                 << " pending_seq=" << d_pending_pdu.start_seq
+                                 << " pending_age=" << (d_frame_seq - d_pending_pdu.start_seq)
+                                 << " pending_need=" << (unsigned int)(d_pending_pdu.declared_blks - d_pending_pdu.decoded_blks);
+                    }
+                    fprintf(stderr, "%s [FRAME_BOUNDARY] nac=0x%03x seq=%u duid=0x%02x fr_len=%u limit=%u end_reason=%s bch=%u candidate=%u\n",
+                            logts.get(d_msgq_id), framer->nac, d_frame_seq, framer->duid,
+                            framer->frame_size, framer->get_frame_size_limit(), reason,
+                            framer->bch_errors, candidate_dump ? 1 : 0);
+                }
+
+                raw.push_back((uint8_t)0xAB);
+                raw.push_back((uint8_t)0xCE);
+                std::string meta_str = raw_meta.str();
+                raw.insert(raw.end(), meta_str.begin(), meta_str.end());
                 process_duid(M_P25_RAW_FRAME, framer->nac, raw.data(), (int)raw.size());
+            }
+
+            if (d_pending_pdu.active && d_frame_seq > d_pending_pdu.start_seq) {
+                const uint32_t age = d_frame_seq - d_pending_pdu.start_seq;
+                fprintf(stderr, "%s [PDU_PENDING_NEXT] nac=0x%03x llid=0x%06x age=%u seq=%u next_duid=0x%02x fr_len=%u need=%u\n",
+                        logts.get(d_msgq_id), d_pending_pdu.nac, d_pending_pdu.llid,
+                        age, d_frame_seq, framer->duid, framer->frame_size,
+                        (unsigned int)(d_pending_pdu.declared_blks - d_pending_pdu.decoded_blks));
+                if (framer->nac != d_pending_pdu.nac || age > 4) {
+                    fprintf(stderr, "%s [PDU_PENDING_CLEAR] reason=%s nac=0x%03x llid=0x%06x age=%u blks=%u cap=%zu\n",
+                            logts.get(d_msgq_id),
+                            framer->nac != d_pending_pdu.nac ? "nac_change" : "age_limit",
+                            d_pending_pdu.nac, d_pending_pdu.llid, age,
+                            d_pending_pdu.declared_blks, d_pending_pdu.decoded_blks);
+                    d_pending_pdu.active = false;
+                }
             }
 
             // extract additional signalling information and voice codewords
